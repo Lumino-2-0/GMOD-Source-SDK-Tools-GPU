@@ -1,0 +1,3 @@
+﻿C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(524,5): warning MSB8004: Le répertoire Output ne se termine pas par une barre oblique finale. Cette instance de build ajoutera une barre oblique, comme requis, pour permettre l'évaluation correcte du répertoire Output.
+     Création de la bibliothèque ..\..\..\bin\vbsp.lib et de l'objet ..\..\..\bin\vbsp.exp
+  vbsp_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\bin\vbsp.exe

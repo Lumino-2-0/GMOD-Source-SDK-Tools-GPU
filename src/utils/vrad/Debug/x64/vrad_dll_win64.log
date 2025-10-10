@@ -1,0 +1,73 @@
+﻿  BSPTreeData.cpp
+  disp_common.cpp
+  disp_powerinfo.cpp
+  disp_vrad.cpp
+  filesystem_init.cpp
+  filesystem_tools.cpp
+  imagepacker.cpp
+  incremental.cpp
+  leaf_ambient_lighting.cpp
+  lightmap.cpp
+  loadcmdline.cpp
+  lumpfiles.cpp
+  macro_texture.cpp
+  memoverride.cpp
+  MySqlDatabase.cpp
+  pacifier.cpp
+  physdll.cpp
+  radial.cpp
+  SampleHash.cpp
+  trace.cpp
+  utilmatlib.cpp
+  vismat.cpp
+  vrad.cpp
+  VRAD_DispColl.cpp
+  VradDetailProps.cpp
+  VRadDisps.cpp
+  vraddll.cpp
+  VRadStaticProps.cpp
+  zip_utils.cpp
+  bsplib.cpp
+  builddisp.cpp
+  ChunkFile.cpp
+  cmdlib.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\macro_texture.cpp(156,9): warning C4101: 'vGlobal' : variable locale non référencée
+  DispColl_Common.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\vrad.cpp(1117,9): warning C4101: 'delta' : variable locale non référencée
+  map_shared.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\lightmap.cpp(1548,17): warning C4101: 'dest' : variable locale non référencée
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\lightmap.cpp(2440,9): warning C4101: 'v' : variable locale non référencée
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\lightmap.cpp(3068,9): warning C4101: 'spot' : variable locale non référencée
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ChunkFile.cpp(957,17): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ChunkFile.cpp(967,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ChunkFile.cpp(968,16): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+  polylib.cpp
+  scriplib.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\trace.cpp(408,29): warning C4101: 'skytrans' : variable locale non référencée
+  threads.cpp
+  tools_minidump.cpp
+  CollisionUtils.cpp
+  filesystem_helpers.cpp
+  ScratchPad3D.cpp
+  ScratchPadUtils.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ScratchPadUtils.cpp(224,9): warning C4101: 'topColor' : variable locale non référencée
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(177,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(178,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(179,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(180,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(185,10): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(186,10): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2370,24): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2378,32): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2379,26): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2392,20): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2393,20): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2394,20): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2395,20): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\VRadStaticProps.cpp(2396,20): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\vraddll.cpp(180,50): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+     Création de la bibliothèque .\Debug\x64\vrad_dll.lib et de l'objet .\Debug\x64\vrad_dll.exp
+  vrad_dll_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad\Debug\x64\vrad_dll.dll
+  Publishing to ..\..\..\game\bin\x64
+          1 fichier(s) copié(s).
+          1 fichier(s) copié(s).

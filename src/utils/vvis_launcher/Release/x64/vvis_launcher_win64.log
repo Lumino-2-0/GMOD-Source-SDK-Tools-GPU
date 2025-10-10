@@ -1,0 +1,4 @@
+﻿C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(524,5): warning MSB8004: Le répertoire Output ne se termine pas par une barre oblique finale. Cette instance de build ajoutera une barre oblique, comme requis, pour permettre l'évaluation correcte du répertoire Output.
+C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuild.targets(538,5): warning MSB8028: Le répertoire intermédiaire (.\Release\x64\) contient des fichiers partagés provenant d'un autre projet (VVIS (Launcher).vcxproj). Cela peut entraîner un comportement de nettoyage et de regénération incorrect.
+     Création de la bibliothèque ..\..\..\bin\vvis_GPU-Modded.lib et de l'objet ..\..\..\bin\vvis_GPU-Modded.exp
+  vvis_launcher_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\bin\vvis_GPU-Modded.exe

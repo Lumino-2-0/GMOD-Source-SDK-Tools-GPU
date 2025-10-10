@@ -1,0 +1,17 @@
+﻿  Un sous-répertoire ou un fichier ..\lib\public\x64 existe déjà.
+  gamedata.cpp
+  gdclass.cpp
+  gdvar.cpp
+  inputoutput.cpp
+  wckeyvalues.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\fgdlib\HelperInfo.h(83,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+  (compiler le fichier source 'gdvar.cpp')
+  
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\fgdlib\HelperInfo.h(83,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+  (compiler le fichier source 'gdclass.cpp')
+  
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\fgdlib\wckeyvalues.cpp(194,11): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\fgdlib\HelperInfo.h(83,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+  (compiler le fichier source 'gamedata.cpp')
+  
+  fgdlib_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\lib\public\x64\fgdlib.lib

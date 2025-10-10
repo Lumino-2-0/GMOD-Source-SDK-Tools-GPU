@@ -1,0 +1,72 @@
+﻿  boundbox.cpp
+  brushbsp.cpp
+  CollisionUtils.cpp
+  csg.cpp
+  cubemap.cpp
+  detail.cpp
+  detailObjects.cpp
+  disp_common.cpp
+  disp_ivp.cpp
+  disp_powerinfo.cpp
+  disp_vbsp.cpp
+  faces.cpp
+  glfile.cpp
+  ivp.cpp
+  leakfile.cpp
+  loadcmdline.cpp
+  lumpfiles.cpp
+  manifest.cpp
+  map.cpp
+  materialpatch.cpp
+  materialsub.cpp
+  memoverride.cpp
+  mstristrip.cpp
+  nodraw.cpp
+  normals.cpp
+  overlay.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\fgdlib\HelperInfo.h(83,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+  physdll.cpp
+  (compiler le fichier source '../vbsp/map.cpp')
+  
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\ivp.cpp(60,10): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\ivp.cpp(75,23): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\ivp.cpp(97,23): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\ivp.cpp(120,23): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\ivp.cpp(126,27): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\map.cpp(2483,32): warning C4267: '=' : conversion de 'size_t' en 'int', perte possible de données
+  portals.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\fgdlib\HelperInfo.h(83,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+  (compiler le fichier source '../vbsp/manifest.cpp')
+  
+  prtfile.cpp
+  ScratchPad3D.cpp
+  scratchpad_helpers.cpp
+  StaticProp.cpp
+  textures.cpp
+  tree.cpp
+  utilmatlib.cpp
+  vbsp.cpp
+  worldvertextransitionfixup.cpp
+  writebsp.cpp
+  zip_utils.cpp
+  bsplib.cpp
+  builddisp.cpp
+  ChunkFile.cpp
+  cmdlib.cpp
+  filesystem_helpers.cpp
+  filesystem_init.cpp
+  filesystem_tools.cpp
+  map_shared.cpp
+  pacifier.cpp
+  polylib.cpp
+  scriplib.cpp
+  threads.cpp
+  tools_minidump.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ChunkFile.cpp(957,17): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ChunkFile.cpp(967,12): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\public\ChunkFile.cpp(968,16): warning C4267: 'initialisation' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\vbsp.cpp(1335,73): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\vbsp.cpp(1392,74): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+     Création de la bibliothèque .\Debug\x64\vbsp.lib et de l'objet .\Debug\x64\vbsp.exp
+  vbsp_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp\Debug\x64\vbsp.exe
+  Publishing to ..\..\..\game\bin\x64

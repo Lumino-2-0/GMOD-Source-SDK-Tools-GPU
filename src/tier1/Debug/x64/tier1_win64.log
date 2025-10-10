@@ -1,0 +1,50 @@
+﻿  Un sous-répertoire ou un fichier ..\lib\public\x64 existe déjà.
+  LzmaDec.c
+  bitbuf.cpp
+  byteswap.cpp
+  characterset.cpp
+  checksum_crc.cpp
+  checksum_md5.cpp
+  checksum_sha1.cpp
+  commandbuffer.cpp
+  convar.cpp
+  datamanager.cpp
+  diff.cpp
+  exprevaluator.cpp
+  generichash.cpp
+  ilocalize.cpp
+  interface.cpp
+  KeyValues.cpp
+  keyvaluesjson.cpp
+  kvpacker.cpp
+  lzmaDecoder.cpp
+  mempool.cpp
+  memstack.cpp
+  NetAdr.cpp
+  newbitbuf.cpp
+  rangecheckedvar.cpp
+  reliabletimer.cpp
+  snappy-sinksource.cpp
+  snappy-stubs-internal.cpp
+  snappy.cpp
+  sparsematrix.cpp
+  splitstring.cpp
+  stringpool.cpp
+  strtools.cpp
+  strtools_unicode.cpp
+  tier1.cpp
+  tokenreader.cpp
+  uniqueid.cpp
+  utlbinaryblock.cpp
+  utlbuffer.cpp
+  utlbufferutil.cpp
+  utlstring.cpp
+  utlsymbol.cpp
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\tier1\utlstring.cpp(98,3): warning C4267: 'argument' : conversion de 'size_t' en 'const T', perte possible de données
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\tier1\utlstring.cpp(98,3): warning C4267:         with
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\tier1\utlstring.cpp(98,3): warning C4267:         [
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\tier1\utlstring.cpp(98,3): warning C4267:             T=int
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\tier1\utlstring.cpp(98,3): warning C4267:         ]
+C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\tier1\strtools.cpp(285,27): warning C4267: 'argument' : conversion de 'size_t' en 'int', perte possible de données
+  processor_detect.cpp
+  tier1_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\lib\public\x64\tier1.lib

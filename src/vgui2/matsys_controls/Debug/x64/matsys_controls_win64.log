@@ -1,0 +1,23 @@
+﻿  Un sous-répertoire ou un fichier ..\..\lib\public\x64 existe déjà.
+  assetpicker.cpp
+  baseassetpicker.cpp
+  colorpickerpanel.cpp
+  curveeditorpanel.cpp
+  gamefiletreeview.cpp
+  manipulator.cpp
+  matsyscontrols.cpp
+  mdlpanel.cpp
+  mdlpicker.cpp
+  mdlsequencepicker.cpp
+  picker.cpp
+  potterywheelpanel.cpp
+  proceduraltexturepanel.cpp
+  QCGenerator.cpp
+  sequencepicker.cpp
+  tgapreviewpanel.cpp
+  vmtpanel.cpp
+  vmtpicker.cpp
+  vmtpreviewpanel.cpp
+  vtfpicker.cpp
+  vtfpreviewpanel.cpp
+  matsys_controls_win64.vcxproj -> C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\lib\public\x64\matsys_controls.lib
