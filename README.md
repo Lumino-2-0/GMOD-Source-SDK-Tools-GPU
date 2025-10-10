@@ -16,6 +16,14 @@ Instead, it aims to document experiments, test optimizations, and demonstrate po
 
 ---
 
+## Development Activity Notice
+
+This repository (and others under my account) is currently maintained at a **very slow and irregular pace**.  
+Development progress may be **paused for long periods** due to lack of priority and available time.  
+Updates, commits, or experimental changes may therefore take **months or even years** before being published.  
+The goal remains to preserve and document my work over time, even if active development is infrequent.
+
+
 ## Current Status
 
 ### VVIS_GPU (OpenCL)
