@@ -44,20 +44,23 @@ typedef struct { int first_portal; int num_portals; } cl_leaf_t;
 
 // Kernel principal : chaque work-item calcule portalvis pour un portail de base
 __kernel void recursive_leaf_flow(__global const cl_portal_t* portals,
-                               __global const cl_leaf_t* leafs,
-                               __global const cl_winding_t* windings,
-                               __global const uint* portalflood_bits,   // bitmasks portalflood (32-bit chunks)
-                               __global uint* portalvis_bits,          // bitmasks portalvis (32-bit chunks) - output
-                               const int num_portals,
-                               const int portallongs)                  // nombre d'entiers 32 bits par bitmask
+		__global const cl_portal_t* portals,
+		__global const cl_leaf_t* leafs,
+		__global const cl_winding_t* windings,
+		__global const uint* portalflood,
+		__global uint* portalvis,
+		__global int* changed,
+		int numportals,
+		int portallongs )
 {
     int portalIndex = get_global_id(0);
     if (portalIndex >= num_portals) return;  // sécurité si taille globale > nombre de portails
 
     // Pointeurs de départ pour ce portail dans les buffers de bits
     const int bitOffset = portalIndex * portallongs;
-    __global const uint* baseFlood = portalflood_bits + bitOffset;
-    __global uint* baseVis   = portalvis_bits + bitOffset;
+	// baseFlood et baseVis calculés correctement à partir des buffers GPU
+	__global const uint* baseFlood = portalflood + bitOffset;
+	__global uint* baseVis = portalvis + bitOffset;
 
     // Initialiser le portalvis de base à 0
     for (int k = 0; k < portallongs; ++k) {
@@ -126,7 +129,7 @@ __kernel void recursive_leaf_flow(__global const cl_portal_t* portals,
         __global const uint* testBits;
         // On n’a pas accès ici à curPortal.status (non stocké), on peut supposer qu’aucun autre n’est "stat_done" en parallèle
         // Donc on utilise toujours portalflood. (Optionnellement, on pourrait avoir un tableau de status en mem. globale.)
-        testBits = portalflood_bits + curPortal.winding_idx * portallongs;  // on utilise winding_idx comme index unique de portail ici
+        testBits = portalflood + curPortal.winding_idx * portallongs;  // on utilise winding_idx comme index unique de portail ici
 
         // Calcul du mask d’intersection (mightsee_next) et détection de bits nouveaux
         uint newBits = 0;
@@ -371,96 +374,186 @@ void OpenCLManager::cleanup() {
 
 void MassiveFloodFillGPU()
 {
+	// Initialise OpenCL (une seule fois). Doit être déjà ok (vérifié avant) ou on quitte en secours CPU.
 	g_clManager.init_once();
-	assert(g_clManager.ok);
+	if (!g_clManager.ok) {
+		Error("OpenCl|GPU - MFF: OpenCL non initialise ! Pas de GPU disponible.\n Avez-vous bien un GPU compatible avec le pilote ?");
+	}
 
-	Msg("PortalFlow (GPU|OpenCL):       ");
+	// Calcul du nombre total de portails (chaque portail de base compte pour 2 directions)
+	int numportals = g_numportals * 2;
+	int portallongs = ::portallongs; // nombre de uint (longs de 32 bits) par portail
+	cl_int err;
 
-	const int numportals = g_numportals * 2;
-	const int portallongs = ::portallongs;
-	const int batch_size = 512; // Taille du lot (par exemple 512 portails)
+	// Buffers OpenCL persistants pour portalflood, portalvis et indicateur 'changed'
+	static cl_mem d_portalflood = nullptr;
+	static cl_mem d_portalvis = nullptr;
+	static cl_mem d_changed = nullptr;
+	static int last_numportals = 0, last_portallongs = 0;
 
-	// Itérer en lots de 'batch_size' portails pour limiter la mémoire
-	for (int base = 0; base < numportals; base += batch_size) {
-		int count = std::min(batch_size, numportals - base);
+	// (Ré)allocation des buffers si la taille change
+	if (!d_portalflood || !d_portalvis || !d_changed ||
+		last_numportals != numportals || last_portallongs != portallongs)
+	{
+		// Libération des anciens buffers
+		if (d_portalflood) clReleaseMemObject(d_portalflood);
+		if (d_portalvis)   clReleaseMemObject(d_portalvis);
+		if (d_changed)     clReleaseMemObject(d_changed);
 
-		// Préparation des données pour ce lot (batch) de portails
-		std::vector<unsigned int> portalflood_flat(count * portallongs, 0u);
-		std::vector<unsigned int> portalvis_flat(count * portallongs, 0u);
-		for (int i = 0; i < count; ++i) {
-			portal_t* p = &portals[base + i];
-			long* src = (long*)p->portalflood;
-			long* vis = (long*)p->portalvis;
-			// Copier les bits initiaux de 'portalflood' et 'portalvis' dans les vecteurs plats
-			for (int j = 0; j < portallongs; ++j) {
-				portalflood_flat[i * portallongs + j] = src[j];
-				portalvis_flat[i * portallongs + j] = vis[j];
-			}
+		// Création des nouveaux buffers GPU (taille = numportals * portallongs * sizeof(uint))
+		d_portalflood = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
+			sizeof(unsigned int) * (size_t)numportals * portallongs,
+			nullptr, &err);
+		if (err != CL_SUCCESS) {
+			if (err == CL_OUT_OF_HOST_MEMORY)
+				Error("OpenCl|GPU - MFF: CL_OUT_OF_HOST_MEMORY lors de clCreateBuffer(portalflood).\n");
+			else
+				Error("OpenCl|GPU - MFF: clCreateBuffer(portalflood) a echoue: %d\n", err);
 		}
-
-		// Création des buffers OpenCL pour ce lot (utilisation de COPY_HOST_PTR simplifie l'écriture)
-		cl_int err;
-		cl_mem d_portalflood = clCreateBuffer(
-			g_clManager.context,
-			CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			sizeof(unsigned int) * portalflood_flat.size(),
-			portalflood_flat.data(), &err);
-		cl_mem d_portalvis = clCreateBuffer(
-			g_clManager.context,
-			CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-			sizeof(unsigned int) * portalvis_flat.size(),
-			portalvis_flat.data(), &err);
-		cl_mem d_changed = clCreateBuffer(
-			g_clManager.context,
-			CL_MEM_READ_WRITE,
+		d_portalvis = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE,
+			sizeof(unsigned int) * (size_t)numportals * portallongs,
+			nullptr, &err);
+		if (err != CL_SUCCESS) {
+			if (err == CL_OUT_OF_HOST_MEMORY)
+				Error("OpenCl|GPU - MFF: CL_OUT_OF_HOST_MEMORY lors de clCreateBuffer(portalvis).\n");
+			else
+				Error("OpenCl|GPU - MFF: clCreateBuffer(portalvis) a echoue: %d\n", err);
+		}
+		d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE,
 			sizeof(int), nullptr, &err);
-
-		// Configuration du kernel OpenCL pour ce lot
-		cl_kernel kernel = g_clManager.floodfill_kernel;
-		clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portalflood);
-		clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_portalvis);
-		clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_changed);
-		// On passe 'count' (nombre de portails dans ce lot) au lieu de numportals
-		clSetKernelArg(kernel, 3, sizeof(int), &count);
-		clSetKernelArg(kernel, 4, sizeof(int), &portallongs);
-		int inner_iters = 256;
-		clSetKernelArg(kernel, 5, sizeof(int), &inner_iters);
-
-		size_t globalSize[2] = { (size_t)count, (size_t)portallongs };
-		int changed = 1;
-		int iter = 0;
-		// Boucle de convergence pour ce lot (identique à l'original)
-		while (changed) {
-			changed = 0;
-			clEnqueueWriteBuffer(g_clManager.queue, d_changed, CL_TRUE, 0, sizeof(int), &changed, 0, nullptr, nullptr);
-			clEnqueueNDRangeKernel(g_clManager.queue, kernel, 2, nullptr, globalSize, nullptr, 0, nullptr, nullptr);
-			clFinish(g_clManager.queue);
-			clEnqueueReadBuffer(g_clManager.queue, d_changed, CL_TRUE, 0, sizeof(int), &changed, 0, nullptr, nullptr);
-			++iter;
-			if (iter > 1000) {
-				Msg("\n[OpenCL|GPU-Mod] Avertissement : dépassement de 1000 itérations (abandon sécurité)\n");
-				break;
-			}
+		if (err != CL_SUCCESS) {
+			if (err == CL_OUT_OF_HOST_MEMORY)
+				Error("OpenCl|GPU - MFF: CL_OUT_OF_HOST_MEMORY lors de clCreateBuffer(changed).\n");
+			else
+				Error("OpenCl|GPU - MFF: clCreateBuffer(changed) a echoue: %d\n", err);
 		}
 
-		// Lecture des résultats du GPU pour ce lot
-		clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
-			sizeof(unsigned int) * portalvis_flat.size(),
-			portalvis_flat.data(), 0, nullptr, nullptr);
+		// Sauvegarde des dimensions pour réallocation future
+		last_numportals = numportals;
+		last_portallongs = portallongs;
+	}
 
-		// Copier les résultats dans la structure principale 'portals'
-		for (int i = 0; i < count; ++i) {
-			portal_t* p = &portals[base + i];
-			long* vis = (long*)p->portalvis;
-			for (int j = 0; j < portallongs; ++j) {
-				vis[j] = portalvis_flat[i * portallongs + j];
-			}
+	// Préparation des données CPU -> vecteurs plats (flatten)
+	std::vector<unsigned int> portalflood_flat((size_t)numportals * portallongs);
+	std::vector<unsigned int> portalvis_flat((size_t)numportals * portallongs);
+	for (int i = 0; i < numportals; ++i) {
+		portal_t* p = &portals[i];
+		// portalflood et portalvis sont des byte*, on cast en uint32 pour lire 32 bits à la fois
+		unsigned int* srcFlood = reinterpret_cast<unsigned int*>(p->portalflood);
+		unsigned int* srcVis = reinterpret_cast<unsigned int*>(p->portalvis);
+		for (int j = 0; j < portallongs; ++j) {
+			portalflood_flat[(size_t)i * portallongs + j] = srcFlood[j];
+			portalvis_flat[(size_t)i * portallongs + j] = srcVis[j];
+		}
+	}
+
+	// Copie des vecteurs plats vers la mémoire GPU (blocking = CL_TRUE)
+	err = clEnqueueWriteBuffer(g_clManager.queue, d_portalflood, CL_TRUE, 0,
+		sizeof(unsigned int) * portalflood_flat.size(),
+		portalflood_flat.data(), 0, nullptr, nullptr);
+	if (err != CL_SUCCESS) {
+		if (err == CL_OUT_OF_HOST_MEMORY)
+			Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueWriteBuffer(portalflood).\n");
+		else
+			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(portalflood) a echoue: %d\n", err);
+	}
+	err = clEnqueueWriteBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
+		sizeof(unsigned int) * portalvis_flat.size(),
+		portalvis_flat.data(), 0, nullptr, nullptr);
+	if (err != CL_SUCCESS) {
+		if (err == CL_OUT_OF_HOST_MEMORY)
+			Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueWriteBuffer(portalvis).\n");
+		else
+			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(portalvis) a echoue: %d\n", err);
+	}
+
+	// Configuration du kernel de flood-fill (ou "PortalFlow") avec ses arguments
+	cl_kernel kernel = g_clManager.floodfill_kernel;
+	clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portals);
+	clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_leafs);
+	clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_windings);
+	clSetKernelArg(kernel, 3, sizeof(cl_mem), &d_portalflood);
+	clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_changed);
+	clSetKernelArg(kernel, 6, sizeof(int), &numportals);
+	clSetKernelArg(kernel, 7, sizeof(int), &portallongs);
+	int inner_iters = 256;
+	err |= clSetKernelArg(kernel, 5, sizeof(int), &inner_iters);
+	if (err != CL_SUCCESS) {
+		Error("MassiveFloodFillGPU: clSetKernelArg a echoue: %d\n", err);
+	}
+
+	// Configuration de la taille globale (2D : [numportals][portallongs])
+	size_t globalSize[2] = { (size_t)numportals, (size_t)portallongs };
+
+	// Boucle de convergence du flood-fill
+	int changed = 1;
+	int iter = 0;
+	Msg("MassiveFloodFillGPU: début du flood-fill... \n");
+	while (changed)
+	{
+		++iter;
+		// Réinitialiser 'changed' à 0 sur GPU
+		changed = 0;
+		err = clEnqueueWriteBuffer(g_clManager.queue, d_changed, CL_TRUE, 0,
+			sizeof(int), &changed, 0, nullptr, nullptr);
+		if (err != CL_SUCCESS) {
+			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(changed) a echoue: %d\n", err);
 		}
 
-		// Libération des buffers OpenCL du lot
-		clReleaseMemObject(d_portalflood);
-		clReleaseMemObject(d_portalvis);
-		clReleaseMemObject(d_changed);
+		// Lancer le kernel de flood-fill (chaque thread traite un couple [portal,word])
+		err = clEnqueueNDRangeKernel(g_clManager.queue, kernel, 2, nullptr,
+			globalSize, nullptr, 0, nullptr, nullptr);
+		if (err != CL_SUCCESS) {
+			if (err == CL_OUT_OF_HOST_MEMORY)
+				Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueNDRangeKernel.\n");
+			else
+				Error("MassiveFloodFillGPU: clEnqueueNDRangeKernel a echoue: %d\n", err);
+		}
+
+		// Attendre la fin du kernel (bloquant). 
+		err = clFinish(g_clManager.queue);
+		if (err != CL_SUCCESS) {
+			Error("MassiveFloodFillGPU: clFinish a echoue: %d\n", err);
+		}
+
+		// Lire la valeur 'changed' depuis le GPU pour savoir si poursuivre
+		err = clEnqueueReadBuffer(g_clManager.queue, d_changed, CL_TRUE, 0,
+			sizeof(int), &changed, 0, nullptr, nullptr);
+		if (err != CL_SUCCESS) {
+			Error("MassiveFloodFillGPU: clEnqueueReadBuffer(changed) a echoue: %d\n", err);
+		}
+
+		// Affichage de progrès optionnel
+		if (iter % 50 == 0) {
+			Msg(" itération %d...\n", iter);
+		}
+		// Limite de sécurité sur le nombre d’itérations
+		if (iter > 1000) {
+			Msg("\n[Warning] MassiveFloodFillGPU: depassement de 1000 iterations, abandon.\n");
+			break;
+		}
+	}
+	Msg("MassiveFloodFillGPU: %d iterations effectuees.\n", iter);
+
+	// Lecture finale du buffer portalvis depuis le GPU (blocking read)
+	err = clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
+		sizeof(unsigned int) * portalvis_flat.size(),
+		portalvis_flat.data(), 0, nullptr, nullptr);
+	if (err != CL_SUCCESS) {
+		if (err == CL_OUT_OF_HOST_MEMORY)
+			Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueReadBuffer(portalvis).\n");
+		else
+			Error("MassiveFloodFillGPU: clEnqueueReadBuffer(portalvis) a echoue: %d\n", err);
+	}
+
+	// Recopie des résultats dans portals[i].portalvis (tableau de bits) 
+	for (int i = 0; i < numportals; ++i) {
+		portal_t* p = &portals[i];
+		unsigned int* dstVis = reinterpret_cast<unsigned int*>(p->portalvis);
+		for (int j = 0; j < portallongs; ++j) {
+			dstVis[j] = portalvis_flat[(size_t)i * portallongs + j];
+		}
 	}
 }
 
