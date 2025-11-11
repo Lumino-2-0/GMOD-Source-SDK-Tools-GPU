@@ -9,7 +9,7 @@ It serves as a **research and testing environment**, not a finalized SDK release
 
 ## Project Overview
 
-The purpose of this project is to explore how the classic Source Engine build tools can be modernized to take advantage of multi-core CPUs, modern compilers, and even GPU acceleration through **OpenCL**.  
+The purpose of this project is to explore how the classic Source Engine build tools can be modernized to take advantage of modern compilers, and even GPU acceleration through **OpenCL**.  
 
 While this repository contains fully compilable tools, it is **not intended for end users** who simply want improved compilers.  
 Instead, it aims to document experiments, test optimizations, and demonstrate potential evolutions of the original Source SDK pipeline.
