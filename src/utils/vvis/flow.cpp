@@ -25,6 +25,8 @@
 #include <chrono>
 #include <threads.h>
 
+extern winding_t* g_windings;
+extern int g_numwindings;
 
 // Kernel OpenCL optimisé(convergence device - side, logs via flags)
 // NB: on reste en scalaire (uint) pour compat max drivers; vectorisation possible plus tard.
@@ -389,6 +391,20 @@ void MassiveFloodFillGPU()
 	static cl_mem d_portalflood = nullptr;
 	static cl_mem d_portalvis = nullptr;
 	static cl_mem d_changed = nullptr;
+	// Préparation des buffers pour portals, leafs et windings
+	cl_mem d_portals = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(cl_portal_t) * numportals, portals, &err);
+	if (err != CL_SUCCESS) Error("clCreateBuffer(d_portals) a échoué: %d\n", err);
+
+	cl_mem d_leafs = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(cl_leaf_t) * numleafs, leafs, &err);
+	if (err != CL_SUCCESS) Error("clCreateBuffer(d_leafs) a échoué: %d\n", err);
+
+	cl_mem d_windings = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(cl_winding_t) * g_numwindings, g_windings, &err);
+	if (err != CL_SUCCESS) Error("clCreateBuffer(d_windings) a échoué: %d\n", err);
+	
+
 	static int last_numportals = 0, last_portallongs = 0;
 
 	// (Ré)allocation des buffers si la taille change
@@ -399,8 +415,12 @@ void MassiveFloodFillGPU()
 		if (d_portalflood) clReleaseMemObject(d_portalflood);
 		if (d_portalvis)   clReleaseMemObject(d_portalvis);
 		if (d_changed)     clReleaseMemObject(d_changed);
-
+		if (d_portals) clReleaseMemObject(d_portals);
+		if (d_leafs) clReleaseMemObject(d_leafs);
+		if (d_windings) clReleaseMemObject(d_windings);
+	
 		// Création des nouveaux buffers GPU (taille = numportals * portallongs * sizeof(uint))
+
 		d_portalflood = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
 			sizeof(unsigned int) * (size_t)numportals * portallongs,
 			nullptr, &err);
@@ -427,8 +447,22 @@ void MassiveFloodFillGPU()
 			else
 				Error("OpenCl|GPU - MFF: clCreateBuffer(changed) a echoue: %d\n", err);
 		}
+		d_portals = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
+			sizeof(portal_t) * numportals, nullptr, &err);
+		if (err != CL_SUCCESS)
+			Error("OpenCL|GPU - clCreateBuffer(portals) a échoué: %d\n", err);
 
+		d_leafs = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
+			sizeof(leaf_t) * portalclusters, nullptr, &err);
+		if (err != CL_SUCCESS)
+			Error("OpenCL|GPU - clCreateBuffer(leafs) a échoué: %d\n", err);
+
+		d_windings = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
+			sizeof(winding_t) * numportals, nullptr, &err);  // <- adapte si besoin
+		if (err != CL_SUCCESS)
+			Error("OpenCL|GPU - clCreateBuffer(windings) a échoué: %d\n", err);
 		// Sauvegarde des dimensions pour réallocation future
+
 		last_numportals = numportals;
 		last_portallongs = portallongs;
 	}
@@ -466,6 +500,18 @@ void MassiveFloodFillGPU()
 		else
 			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(portalvis) a echoue: %d\n", err);
 	}
+	clEnqueueWriteBuffer(g_clManager.queue, d_portals, CL_TRUE, 0,
+		sizeof(portal_t) * numportals, portals, 0, nullptr, nullptr);
+
+	clEnqueueWriteBuffer(g_clManager.queue, d_leafs, CL_TRUE, 0,
+		sizeof(leaf_t) * portalclusters, leafs, 0, nullptr, nullptr);
+
+	std::vector<winding_t> windings_flat(numportals);
+	for (int i = 0; i < numportals; ++i)
+		windings_flat[i] = *portals[i].winding;
+
+	clEnqueueWriteBuffer(g_clManager.queue, d_windings, CL_TRUE, 0,
+		sizeof(winding_t) * numportals, windings_flat.data(), 0, nullptr, nullptr);
 
 	// Configuration du kernel de flood-fill (ou "PortalFlow") avec ses arguments
 	cl_kernel kernel = g_clManager.floodfill_kernel;
