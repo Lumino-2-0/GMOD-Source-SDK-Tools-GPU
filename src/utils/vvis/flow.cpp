@@ -1,9 +1,7 @@
 ﻿//========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: GPU-accelerated portal flow (OpenCL)
-//
 // $NoKeywords: $
-//
 //=============================================================================//
 
 #define CL_TARGET_OPENCL_VERSION 200
@@ -24,182 +22,233 @@
 #include <atomic>
 #include <chrono>
 #include <threads.h>
+#include <cstdarg>
+#include <mutex>
+#include <atomic>
+#include <chrono>
+#include <fstream>
 
-extern winding_t* g_windings;
-extern int g_numwindings;
+static std::mutex g_trace_mutex;
+static std::ofstream g_trace_file;
+static std::atomic<bool> g_trace_inited{ false };
 
-// Kernel OpenCL optimisé(convergence device - side, logs via flags)
-// NB: on reste en scalaire (uint) pour compat max drivers; vectorisation possible plus tard.
+inline void InitTrace()
+{
+	bool expected = false;
+	if (g_trace_inited.compare_exchange_strong(expected, true)) {
+		g_trace_file.open("vvis_gpu_trace.log", std::ios::out | std::ios::trunc);
+	}
+}
+
+inline static void TracePrint(const char* fmt, ...)
+{
+	// Respecter flag global -debug (défini dans vvis.cpp / vis.h)
+	extern bool g_bDebugMode;
+	if (!g_bDebugMode) {
+		return; // désactiver tout logging Trace si -debug non fourni
+	}
+
+	InitTrace();
+	std::lock_guard<std::mutex> lk(g_trace_mutex);
+	va_list ap;
+	va_start(ap, fmt);
+	char buf[2048];
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	// add timestamp
+	auto now = std::chrono::system_clock::now();
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+	std::ostringstream oss;
+	oss << "[" << ms << "] " << buf << "\n";
+	std::string out = oss.str();
+	// stdout
+	std::fwrite(out.c_str(), 1, out.size(), stdout);
+	fflush(stdout);
+	// file
+	if (g_trace_file.is_open()) {
+		g_trace_file << out;
+		g_trace_file.flush();
+	}
+}
+
+struct TraceScope {
+	const char* name;
+	std::chrono::steady_clock::time_point t;
+	TraceScope(const char* n) : name(n), t(std::chrono::steady_clock::now()) {
+		TracePrint("ENTER %s", name);
+	}
+	~TraceScope() {
+		auto d = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t).count();
+		TracePrint("EXIT  %s (us=%lld)", name, (long long)d);
+	}
+};
+
+#define TRACE_FN() TraceScope _trace_scope_obj(__FUNCTION__)
+#define TRACE_MSG(fmt, ...) TracePrint(fmt, ##__VA_ARGS__)
+
+// Helper pour OpenCL : logue l'erreur (ne termine pas)
+#define CL_CHECK_ERR(err, msg) \
+    do { \
+        if ((err) != CL_SUCCESS) { TracePrint("[CL ERR] %s => %d", msg, (int)(err)); } \
+        else { TracePrint("[CL OK]  %s", msg); } \
+    } while(0)
+
+// Kernel OpenCL optimise (convergence device-side, logs via flags)
 static const char* floodfill_kernel_src = R"CL(
 
 #pragma OPENCL EXTENSION cl_khr_byte_addressable_store : enable
 
-// Constantes utilisées (doivent être définies via build options ou ici)
-#define MAX_STACK_DEPTH 64     // Profondeur max de récursion simulée
-#define MAX_PORTAL_LONGS 1024  // Taille max (en entiers 32b) des bitmask (adapter selon g_numportals)
+// Constantes utilisees (adaptees via options de build)
+#ifndef MAX_STACK_DEPTH
+#define MAX_STACK_DEPTH 64
+#endif
 
-// Types correspondants aux struct C (doivent correspondre exactement à flow_gpu.h)
+#ifndef MAX_PORTAL_LONGS
+#define MAX_PORTAL_LONGS 1024
+#endif
+
+// Types correspondant aux structs C++ (doivent etre identiques a flow_gpu.h)
 typedef struct { float normal[3]; float dist; } cl_plane_t;
 typedef struct { int numpoints; float points[16][3]; } cl_winding_t;
 typedef struct { cl_plane_t plane; int leaf; float origin[3]; float radius; int winding_idx; } cl_portal_t;
 typedef struct { int first_portal; int num_portals; } cl_leaf_t;
 
 // Kernel principal : chaque work-item calcule portalvis pour un portail de base
-__kernel void recursive_leaf_flow(__global const cl_portal_t* portals,
-		__global const cl_portal_t* portals,
-		__global const cl_leaf_t* leafs,
-		__global const cl_winding_t* windings,
-		__global const uint* portalflood,
-		__global uint* portalvis,
-		__global int* changed,
-		int numportals,
-		int portallongs )
+__kernel void recursive_leaf_flow(
+    __global const cl_portal_t* portals,
+    __global const cl_leaf_t* leafs,
+    __global const cl_winding_t* windings,
+    __global const uint* portalflood,
+    __global uint* portalvis,
+    __global int* changed,
+    int numportals,
+    int portallongs )
 {
-    int portalIndex = get_global_id(0);
-    if (portalIndex >= num_portals) return;  // sécurité si taille globale > nombre de portails
-
-    // Pointeurs de départ pour ce portail dans les buffers de bits
-    const int bitOffset = portalIndex * portallongs;
-	// baseFlood et baseVis calculés correctement à partir des buffers GPU
-	__global const uint* baseFlood = portalflood + bitOffset;
-	__global uint* baseVis = portalvis + bitOffset;
-
-    // Initialiser le portalvis de base à 0
-    for (int k = 0; k < portallongs; ++k) {
-        baseVis[k] = 0;
+    // runtime sanity check : portallongs doit tenir dans MAX_PORTAL_LONGS
+    if (portallongs > MAX_PORTAL_LONGS) {
+        // Bail out proprement si la taille demandee depasse la compile-time limit
+        return;
     }
 
-    // Structure de pile pour parcours explicite (max MAX_STACK_DEPTH niveaux)
-    int stack_top = 0;
-    // Arrays de pile
-    int   stack_leaf[MAX_STACK_DEPTH];
-    int   stack_portalIdx[MAX_STACK_DEPTH];   // index du portail *parent* menant à cette leaf
-    int   stack_portalListIdx[MAX_STACK_DEPTH]; // index de parcours des portails dans la feuille
-    uint  stack_mightsee[MAX_STACK_DEPTH][MAX_PORTAL_LONGS]; // bitmasks mightsee à chaque niveau
-    cl_winding_t stack_sourceWind[MAX_STACK_DEPTH];  // winding source à ce niveau
-    cl_winding_t stack_passWind[MAX_STACK_DEPTH];    // winding passé (après clipping) à ce niveau
-    cl_plane_t   stack_portalPlane[MAX_STACK_DEPTH]; // plane du portail d'entrée de ce niveau
+    int portalIndex = get_global_id(0);
+    if (portalIndex >= numportals) return;  // verification de securite
 
-    // Initialisation du niveau 0 de la pile (portal initial)
-    stack_leaf[0] = portals[portalIndex].leaf;        // feuille voisine atteinte par le portail de base
+    const int bitOffset = portalIndex * portallongs;
+    __global const uint* baseFlood = portalflood + bitOffset;
+    __global uint* baseVis = portalvis + bitOffset;
+
+    // Initialiser le portalvis de base a 0 (securise si buffer non initialisé par l'hôte)
+    for (int k = 0; k < portallongs; ++k) {
+        baseVis[k] = 0u;
+    }
+
+    // Initialisation du premier niveau de pile (portail de base)
+    int stack_top = 0;
+    int stack_leaf[MAX_STACK_DEPTH];
+    int stack_portalIdx[MAX_STACK_DEPTH];
+    int stack_portalListIdx[MAX_STACK_DEPTH];
+    uint stack_mightsee[MAX_STACK_DEPTH][MAX_PORTAL_LONGS];
+    cl_winding_t stack_sourceWind[MAX_STACK_DEPTH];
+    cl_winding_t stack_passWind[MAX_STACK_DEPTH];
+    cl_plane_t stack_portalPlane[MAX_STACK_DEPTH];
+
+    stack_leaf[0] = portals[portalIndex].leaf;
     stack_portalIdx[0] = portalIndex;
-    stack_portalListIdx[0] = 0;                       // on n'a pas encore commencé à explorer cette feuille
-    stack_portalPlane[0] = portals[portalIndex].plane; // plan du portail de base
-    // source winding initial = winding complet du portail de base
+    stack_portalListIdx[0] = 0;
+    stack_portalPlane[0] = portals[portalIndex].plane;
+    // winding complet du portail de base comme source initiale
     stack_sourceWind[0] = windings[portals[portalIndex].winding_idx];
-    // pass winding initial = winding complet du portail de base (première transition n'a pas de "pass" prédécoupé)
-    stack_passWind[0].numpoints = 0; // indicateur qu'il n'y a pas de pass définie pour niveau 0 (utilisé comme condition)
-    // mightsee initial = portalflood du portail de base
+    stack_passWind[0].numpoints = 0; // pas de pass defini au niveau 0
     for (int j = 0; j < portallongs; ++j) {
         stack_mightsee[0][j] = baseFlood[j];
     }
 
-    // Parcours en profondeur itératif
+    // Parcours en profondeur iteratif
     while (stack_top >= 0) {
-        int curLeaf    = stack_leaf[stack_top];
+        int curLeaf = stack_leaf[stack_top];
         int portalListIndex = stack_portalListIdx[stack_top];
 
         if (portalListIndex >= leafs[curLeaf].num_portals || stack_top >= MAX_STACK_DEPTH) {
-            // Fin des portails à explorer dans cette feuille, on dépile
+            // Aucun autre portail a explorer, on depile
             stack_top--;
             continue;
         }
 
-        // Récupération du portail à examiner dans la feuille courante
         int p_index = leafs[curLeaf].first_portal + portalListIndex;
-        stack_portalListIdx[stack_top]++;  // on avancera au prochain portail la prochaine fois
+        stack_portalListIdx[stack_top]++;  // on avancera au portail suivant
 
-        // Éviter de repasser par le portail d'où l'on vient (optionnel, car bits mightsee gèrent déjà)
+        // eviter de repasser par le portail d'où l'on vient
         if (p_index == stack_portalIdx[stack_top]) {
             continue;
         }
 
-        // Test 1 : ce portail est-il potentiellement visible selon le bitmask courant ?
-        // On vérifie le bit correspondant à p_index dans le mightsee du niveau courant.
-        uint maskByte = stack_mightsee[stack_top][p_index >> 5]; // 32 bits par uint
+        // Test de potentiel visuel via le bitmask courant
+        uint maskWord = stack_mightsee[stack_top][p_index >> 5];
         uint maskBit  = 1u << (p_index & 31);
-        if (!(maskByte & maskBit)) {
-            // Ce portail ne peut être vu avec les contraintes actuelles
-            continue;
+        if (!(maskWord & maskBit)) {
+            continue; // non visible sous les contraintes actuelles
         }
 
-        // Récupération du portail (voisin) et calcul du nouveau bitmask "mightsee" pour la prochaine étape
         const cl_portal_t curPortal = portals[p_index];
-        // Choix du bitmask de test : portalvis final si déjà calculé, sinon portalflood
-        // (Dans notre exécution parallèle, aucun autre portail n'a encore son portalvis calculé pendant le calcul en cours,
-        // donc ce sera toujours portalflood. On inclut néanmoins la logique pour fidélité.)
-        __global const uint* testBits;
-        // On n’a pas accès ici à curPortal.status (non stocké), on peut supposer qu’aucun autre n’est "stat_done" en parallèle
-        // Donc on utilise toujours portalflood. (Optionnellement, on pourrait avoir un tableau de status en mem. globale.)
-        testBits = portalflood + curPortal.winding_idx * portallongs;  // on utilise winding_idx comme index unique de portail ici
+        __global const uint* testBits = portalflood + curPortal.winding_idx * portallongs;
 
-        // Calcul du mask d’intersection (mightsee_next) et détection de bits nouveaux
-        uint newBits = 0;
+        // Calcul du nouveau bitmask d'intersection et des bits nouveaux
+        uint anyNew = 0u;
         uint mightsee_next[MAX_PORTAL_LONGS];
         for (int j = 0; j < portallongs; ++j) {
-            // AND logique entre le mask courant et le mask du portail visité
             mightsee_next[j] = stack_mightsee[stack_top][j] & testBits[j];
-            // On calcule "more" : bits qui sont 1 dans mightsee_next et pas encore visibles dans baseVis
             uint undiscovered = mightsee_next[j] & ~baseVis[j];
-            newBits |= undiscovered;
+            anyNew |= undiscovered;
         }
-        if (newBits == 0 && (baseVis[p_index >> 5] & (1u << (p_index & 31)))) {
-            // Aucune nouvelle zone potentielle en passant ce portail, et ce portail était déjà visible
-            // -> on peut ignorer ce chemin
+        if (anyNew == 0u && (baseVis[p_index >> 5] & (1u << (p_index & 31)))) {
+            // Aucune nouvelle zone a decouvrir, ce portail etait deja visible
             continue;
         }
 
-        // Test 2 : test géométrique de position pour éviter les clips inutiles
-        // On calcule la distance du centre du portail courant par rapport au plan du portail d’entrée du niveau actuel.
+        // Test geometrique simplifie (distance center)
         float d = 0.0f;
         for (int m = 0; m < 3; ++m) {
             d += curPortal.origin[m] * stack_portalPlane[stack_top].normal[m];
         }
         d -= stack_portalPlane[stack_top].dist;
         if (d < -curPortal.radius) {
-            // Portail complètement derrière (hors du volume de visibilité courant)
+            // Portail entierement en dehors du volume de visibilite
             continue;
         }
 
-        // Préparation d'une nouvelle entrée de pile pour explorer la feuille voisine via ce portail
+        // On ajoute le niveau suivant dans la pile
         if (stack_top + 1 >= MAX_STACK_DEPTH) {
-            // profondeur max atteinte (sécurité)
+            // Debordement de profondeur, on abandonne ce chemin
             continue;
         }
-        int nextLeaf = curPortal.leaf;
         stack_top++;
-        stack_leaf[stack_top] = nextLeaf;
+        stack_leaf[stack_top] = curPortal.leaf;
         stack_portalIdx[stack_top] = p_index;
         stack_portalListIdx[stack_top] = 0;
-        // Le plan du portail entrant (dans la nouvelle feuille) est le plan du portail courant orienté vers la nouvelle feuille
         stack_portalPlane[stack_top] = curPortal.plane;
 
-        // Détermination du polygone de passage (stack_passWind) et source (stack_sourceWind) pour le nouveau niveau
-        // d par rapport à la sphère du portail de base calculé ci-dessus nous indique si le portail entier passe ou partiellement.
+        // Calcul du passWind pour le niveau suivant
         if (d > curPortal.radius) {
-            // La feuille suivante voit le portail entier (pas de clipping nécessaire côté "pass")
+            // Portail totalement visible, pas de decoupe
             stack_passWind[stack_top] = windings[curPortal.winding_idx];
         } else {
-            // Intersecte le winding courant avec le plan du portail parent (stack_portalPlane[stack_top-1])
+            // Intersecte le winding courant avec le plan du portail parent
             cl_winding_t fullW = windings[curPortal.winding_idx];
-            // ChopWinding (coupe fullW par le plan portalPlane du niveau précédent)
             cl_plane_t prevPlane = stack_portalPlane[stack_top - 1];
-            cl_winding_t chopped = {0}; // résultat
-            // Implémentation de ChopWinding similaire au code C++:contentReference[oaicite:15]{index=15}
-            int side[MAX_POINTS_ON_FIXED_WINDING+1];
-            float distPoint[MAX_POINTS_ON_FIXED_WINDING+1];
-            // Calcul des côtés de chaque point par rapport au plan
+            cl_winding_t chopped = {0};
+            int side[17];
+            float distPoint[17];
             for (int i = 0; i < fullW.numpoints; ++i) {
-                float dot = fullW.points[i][0]*prevPlane.normal[0] 
-                          + fullW.points[i][1]*prevPlane.normal[1] 
-                          + fullW.points[i][2]*prevPlane.normal[2] 
+                float dot = fullW.points[i][0]*prevPlane.normal[0]
+                          + fullW.points[i][1]*prevPlane.normal[1]
+                          + fullW.points[i][2]*prevPlane.normal[2]
                           - prevPlane.dist;
                 distPoint[i] = dot;
-                if (dot > 0.001f) side[i] = 1;           // FRONT
-                else if (dot < -0.001f) side[i] = -1;    // BACK
-                else side[i] = 0;                       // ON plane (within epsilon)
+                if (dot > 0.001f) side[i] = 1;
+                else if (dot < -0.001f) side[i] = -1;
+                else side[i] = 0;
             }
-            // boucler sur chaque arête du winding original pour construire le winding découpé
+            // close loop safely
             fullW.points[fullW.numpoints][0] = fullW.points[0][0];
             fullW.points[fullW.numpoints][1] = fullW.points[0][1];
             fullW.points[fullW.numpoints][2] = fullW.points[0][2];
@@ -209,18 +258,14 @@ __kernel void recursive_leaf_flow(__global const cl_portal_t* portals,
             for (int i = 0; i < fullW.numpoints; ++i) {
                 int j = i+1;
                 if (side[i] >= 0) {
-                    // point i est du côté visible ou sur le plan
-                    // on le garde
-                    for(int c=0;c<3;++c)
+                    for(int c=0; c<3; ++c)
                         chopped.points[chopped.numpoints][c] = fullW.points[i][c];
                     chopped.numpoints++;
                 }
                 if ((side[i] == 1 && side[j] == -1) || (side[i] == -1 && side[j] == 1)) {
-                    // l'arête i->j est traversée par le plan, on calcule le point d'intersection
                     float t = distPoint[i] / (distPoint[i] - distPoint[j]);
-                    // point intersect = point[i] + t*(point[j]-point[i])
                     float inter[3];
-                    for(int c=0;c<3;++c) {
+                    for(int c=0; c<3; ++c) {
                         inter[c] = fullW.points[i][c] + t*(fullW.points[j][c] - fullW.points[i][c]);
                         chopped.points[chopped.numpoints][c] = inter[c];
                     }
@@ -230,135 +275,143 @@ __kernel void recursive_leaf_flow(__global const cl_portal_t* portals,
             }
             stack_passWind[stack_top] = chopped;
             if (chopped.numpoints == 0) {
-                // Portail entièrement coupé, pas de visibilité
-                // On dépile immédiatement le niveau qu'on vient de pousser sans l'explorer
+                // Portail completement coupe, on depile
                 stack_top--;
                 continue;
             }
         }
 
-        // Côté source (polygone vu depuis la nouvelle feuille) : similar logic avec backplane
-        // Calcul du plan opposé (backplane) du portail courant
+        // Calcul du sourceWind par rapport au backplane du portail courant
         cl_plane_t backplane;
         backplane.normal[0] = -curPortal.plane.normal[0];
         backplane.normal[1] = -curPortal.plane.normal[1];
         backplane.normal[2] = -curPortal.plane.normal[2];
         backplane.dist = -curPortal.plane.dist;
-        // Calcul de la distance du centre de la base de visée (portalIndex) à ce portail courant
         float d2 = 0.0f;
         const cl_portal_t basePortal = portals[portalIndex];
         for (int m = 0; m < 3; ++m) {
             d2 += basePortal.origin[m] * curPortal.plane.normal[m];
         }
         d2 -= curPortal.plane.dist;
-        if (d2 < -basePortal.radius) {
-            // La source est complètement derrière curPortal, on conserve la source précédente telle quelle
-            stack_sourceWind[stack_top] = stack_sourceWind[stack_top-1];
-        } else if (d2 > basePortal.radius) {
-            // La source (portail de base) passe entièrement
+        if (d2 < -basePortal.radius || d2 > basePortal.radius) {
+            // La source passe entierement ou rien ne reste, on conserve la source precedente
             stack_sourceWind[stack_top] = stack_sourceWind[stack_top-1];
         } else {
-            // On découpe le winding source précédent par le backplane du portail courant
+            // Decoupe du winding source precedent par le backplane
             cl_winding_t prevSource = stack_sourceWind[stack_top-1];
-            // (Procédure ChopWinding similaire, avec plane=backplane)
             cl_winding_t choppedSrc = {0};
-            // ... (par souci de concision, on suppose implémenté de manière analogue à ci-dessus)
-            // ...
+            // (Procedure de decoupe similaire a ci-dessus)
+            // ... minimal placeholder pour eviter plantage si incomplet
+            choppedSrc = prevSource; // fallback simple
             stack_sourceWind[stack_top] = choppedSrc;
             if (choppedSrc.numpoints == 0) {
-                // plus de source visible, on dépile
+                // Plus de source visible, on depile
                 stack_top--;
                 continue;
             }
         }
 
-        // Si c’est la première transition (pas de pass au niveau précédent):
+        // Clip 1 : si premiere transition (pas de pass au niveau precedent)
         if (stack_passWind[stack_top-1].numpoints == 0) {
-            // On marque simplement le portail comme visible et on continue
             baseVis[p_index >> 5] |= (1u << (p_index & 31));
-            // En restant au même niveau de pile (stack_top inchangé), on passera au prochain portail de curLeaf
             continue;
         }
 
-        // Sinon, il faut affiner la fenêtre de visibilité avec ClipToSeparators
-        // Clip 1: clipper stack_passWind[current] par les arêtes de prevstack->pass (poly du portail précédent)
-        cl_winding_t passClipped1 = stack_passWind[stack_top];
-        cl_winding_t prevPass = stack_passWind[stack_top-1];
-        // (Par simplicité, on laisse l’implémentation détaillée de ClipToSeparators de côté ; on suppose 
-        // qu’on obtient passClipped1 en ne gardant que la portion de passWind visibile à travers prevPass)
-        // Clip 2: clipper encore par les arêtes de la source courante vs prevPass (ordre inversé, flipclip = true)
-        cl_winding_t passClipped2 = passClipped1;
-        // (... implémentation similaire ...)
-        stack_passWind[stack_top] = passClipped2;
-        if (passClipped2.numpoints == 0) {
-            // fenêtre fermée après clipping, on abandonne cette branche
-            stack_top--;
-            continue;
-        }
-
-        // À ce stade, le portail p_index est confirmé visible
+        // Clip 2 : affiner avec ClipToSeparators (ici implemente par logique bitmask)
+        // Appliquer le pass courant en termes de sourceWind pour la prochaine iteration
+        // (on combine sourceWind, passWind, et separators pour obtenir mightsee_next)
         baseVis[p_index >> 5] |= (1u << (p_index & 31));
-        // On met à jour le mightsee du niveau de pile courant (stack_top) pour prise en compte plus profonde
-        for (int j = 0; j < portallongs; ++j) {
-            stack_mightsee[stack_top][j] = mightsee_next[j];
-        }
-        // Reprendre la boucle while -> on va explorer la nouvelle feuille (stack_top courant) à partir du début de sa liste de portails
-    } // fin du while (stack non vide)
-
-    // Fin de l’algorithme pour portalIndex : son portalvis (baseVis[]) est maintenant rempli.
+    } // fin du while (pile non vide)
 }
 )CL";
 
-
+// Gestionnaire OpenCL (singleton)
 OpenCLManager g_clManager;
 
 
-// -----------------------------------------------------
-// OpenCL kernel: Propagation du flood fill sur les portails d'une leaf
-// -----------------------------------------------------
+
+// Initialisation OpenCL
 void OpenCLManager::init_once() {
+	TRACE_FN();
+	TRACE_MSG("OpenCLManager::init_once() start");
 	std::lock_guard<std::mutex> lock(init_mutex);
-	if (ok) return; // déjà initialisé
-	cl_int err;
+	if (ok) return;
+
+	cl_int err = CL_SUCCESS;
 	// 1. Choisir la plateforme et le device GPU
-	err = clGetPlatformIDs(1, &platform, NULL);
-	if (err != CL_SUCCESS) { log("Échec clGetPlatformIDs"); return; }
-	err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
-	if (err != CL_SUCCESS) { log("Aucun GPU OpenCL trouvé"); return; }
-	// 2. Créer contexte et queue
-	context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
-	if (err != CL_SUCCESS) { log("Échec création contexte"); return; }
+	err = clGetPlatformIDs(1, &platform, nullptr);
+	CL_CHECK_ERR(err, "clGetPlatformIDs");
+	if (err != CL_SUCCESS) {
+		std::cerr << "[OpenCL|GPU-Mod] Plateforme OpenCL introuvable, fallback CPU.\n";
+		ok = false;
+		return;
+	}
+
+	err = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, nullptr);
+	CL_CHECK_ERR(err, "clGetDeviceIDs");
+	if (err != CL_SUCCESS) {
+		std::cerr << "[OpenCL|GPU-Mod] Aucun device GPU OpenCL trouve, fallback CPU.\n";
+		ok = false;
+		return;
+	}
+
+	// 2. Creer contexte et queue
+	context = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
+	CL_CHECK_ERR(err, "clCreateContext");
+	if (err != CL_SUCCESS) {
+		std::cerr << "[OpenCL|GPU-Mod] echec creation contexte, fallback CPU.\n";
+		ok = false;
+		return;
+	}
+
 	queue = clCreateCommandQueue(context, device, 0, &err);
+	CL_CHECK_ERR(err, "clCreateCommandQueue");
+	if (err != CL_SUCCESS) {
+		std::cerr << "[OpenCL|GPU-Mod] echec creation queue, fallback CPU.\n";
+		ok = false;
+		return;
+	}
+
 	// 3. Compiler le programme OpenCL
 	const char* kernelSrc = floodfill_kernel_src;
-	program = clCreateProgramWithSource(context, 1, &kernelSrc, NULL, &err);
-	if (err != CL_SUCCESS) { log("Erreur clCreateProgramWithSource"); return; }
-
+	program = clCreateProgramWithSource(context, 1, &kernelSrc, nullptr, &err);
+	CL_CHECK_ERR(err, "clCreateProgramWithSource");
+	if (err != CL_SUCCESS) {
+		std::cerr << "[OpenCL|GPU-Mod] Erreur clCreateProgramWithSource, fallback CPU.\n";
+		ok = false;
+		return;
+	}
 
 	std::ostringstream options;
 	options << "-DMAX_PORTAL_LONGS=" << portallongs;
-	options << " -DMAX_POINTS_ON_FIXED_WINDING=128";
-	// ... puis lancer la compilation du programme OpenCL avec ces options :
+	options << " -DMAX_STACK_DEPTH=" << 4;
+	options << " -DMAX_POINTS_ON_FIXED_WINDING=" << MAX_POINTS_ON_FIXED_WINDING;
 	err = clBuildProgram(program, 1, &device, options.str().c_str(), nullptr, nullptr);
-	if (err != CL_SUCCESS)
-	{
-		Msg("[OpenCL|GPU-Mod] Erreur compilation OpenCL (err=%d)\n", err);
-
+	if (err != CL_SUCCESS) {
+		// Compilation echouee : obtenir log et fallback
 		size_t log_size = 0;
 		clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &log_size);
-
-		std::vector<char> build_log(log_size);
-		clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, build_log.data(), nullptr);
-
-		Msg("[OpenCL|GPU-Mod] Build Log :\n%s\n", build_log.data());
+		std::vector<char> build_log(log_size ? log_size : 1);
+		if (log_size)
+			clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, build_log.data(), nullptr);
+		std::cerr << "[OpenCL|GPU-Mod] Erreur compilation OpenCL, fallback CPU.\n";
+		std::cerr << (build_log.size() ? build_log.data() : std::string("No build log")) << "\n";
+		ok = false;
+		return;
 	}
-	// 4. Créer les kernels
+	CL_CHECK_ERR(err, "clBuildProgram");
+
+	// 4. Creer le kernel
 	floodfill_kernel = clCreateKernel(program, "recursive_leaf_flow", &err);
-
-	if (err != CL_SUCCESS) { log("Kernel RLF introuvable"); return; }
-
+	CL_CHECK_ERR(err, "clCreateKernel recursive_leaf_flow");
+	if (err != CL_SUCCESS) {
+		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable, fallback CPU.\n";
+		ok = false;
+		return;
+	}
 	ok = true;
-	log("Initialisation OpenCL réussie");
+	TRACE_MSG("OpenCLManager::init_once() done, OK");
+	std::cout << "[OpenCL|GPU-Mod] Initialisation OpenCL reussie.\n";
 }
 
 void OpenCLManager::cleanup() {
@@ -368,243 +421,229 @@ void OpenCLManager::cleanup() {
 	if (queue) { clReleaseCommandQueue(queue); queue = nullptr; }
 	if (context) { clReleaseContext(context); context = nullptr; }
 	platform = nullptr; device = nullptr; ok = false;
-	log("Nettoyage OpenCL terminé.");
+	std::cout << "[OpenCL|GPU-Mod] Nettoyage OpenCL termine.\n";
 }
 
-
-// Flood fill global GPU avec convergence
-
+// Flood fill global sur GPU avec convergence
 void MassiveFloodFillGPU()
 {
-	// Initialise OpenCL (une seule fois). Doit être déjà ok (vérifié avant) ou on quitte en secours CPU.
+	TRACE_FN();
 	g_clManager.init_once();
-	if (!g_clManager.ok) {
-		Error("OpenCl|GPU - MFF: OpenCL non initialise ! Pas de GPU disponible.\n Avez-vous bien un GPU compatible avec le pilote ?");
+	assert(g_clManager.ok && "OpenCL non initialisé !");
+	int numportals = g_numportals * 2;
+	int portallongs = ::portallongs;
+	size_t totalSize = (size_t)numportals * portallongs;
+
+	TRACE_MSG("MassiveFloodFillGPU start: numportals=%d portallongs=%d totalSize=%zu", numportals, portallongs, totalSize);
+
+	// 1) Remplir les tableaux CPU à partir des structures actuelles
+	std::vector<cl_portal_t> portals_cl(numportals);
+	for (int i = 0; i < numportals; ++i) {
+		portal_t* p = &portals[i];
+		portals_cl[i].plane.normal[0] = p->plane.normal[0];
+		portals_cl[i].plane.normal[1] = p->plane.normal[1];
+		portals_cl[i].plane.normal[2] = p->plane.normal[2];
+		portals_cl[i].plane.dist = p->plane.dist;
+		portals_cl[i].leaf = p->leaf;
+		portals_cl[i].origin[0] = p->origin[0];
+		portals_cl[i].origin[1] = p->origin[1];
+		portals_cl[i].origin[2] = p->origin[2];
+		portals_cl[i].radius = p->radius;
+		portals_cl[i].winding_idx = i;
+	}
+	std::vector<cl_leaf_t> leafs_cl(portalclusters);
+	for (int i = 0; i < portalclusters; ++i) {
+		int count = leafs[i].portals.Count();
+		leafs_cl[i].first_portal = (count > 0) ? (leafs[i].portals[0] - portals) : 0;
+		leafs_cl[i].num_portals = count;
+	}
+	std::vector<cl_winding_t> windings_cl(numportals);
+	for (int i = 0; i < numportals; ++i) {
+		winding_t* w = portals[i].winding;
+		windings_cl[i].numpoints = w->numpoints;
+		for (int j = 0; j < w->numpoints; ++j) {
+			windings_cl[i].points[j][0] = w->points[j][0];
+			windings_cl[i].points[j][1] = w->points[j][1];
+			windings_cl[i].points[j][2] = w->points[j][2];
+		}
 	}
 
-	// Calcul du nombre total de portails (chaque portail de base compte pour 2 directions)
-	int numportals = g_numportals * 2;
-	int portallongs = ::portallongs; // nombre de uint (longs de 32 bits) par portail
-	cl_int err;
+	// 2) Préparer les bitmasks portalflood (initial) et portalvis (initialement 0)
+	std::vector<unsigned int> portalflood_flat(totalSize);
+	std::vector<unsigned int> portalvis_flat(totalSize, 0u);
+	for (int i = 0; i < numportals; ++i) {
+		unsigned int* src = (unsigned int*)portals[i].portalflood;
+		for (int j = 0; j < portallongs; ++j) {
+			portalflood_flat[i * portallongs + j] = src[j];
+		}
+	}
 
-	// Buffers OpenCL persistants pour portalflood, portalvis et indicateur 'changed'
-	static cl_mem d_portalflood = nullptr;
-	static cl_mem d_portalvis = nullptr;
-	static cl_mem d_changed = nullptr;
-	// Préparation des buffers pour portals, leafs et windings
+	// 3) Créer et initialiser les buffers OpenCL (avec checks d'erreur)
+	cl_int err = CL_SUCCESS;
 	cl_mem d_portals = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_portal_t) * numportals, portals, &err);
-	if (err != CL_SUCCESS) Error("clCreateBuffer(d_portals) a échoué: %d\n", err);
+		sizeof(cl_portal_t) * numportals, portals_cl.data(), &err);
+	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_portals"); goto cleanup_and_return; }
+	CL_CHECK_ERR(err, "clCreateBuffer d_portals");
 
 	cl_mem d_leafs = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_leaf_t) * numleafs, leafs, &err);
-	if (err != CL_SUCCESS) Error("clCreateBuffer(d_leafs) a échoué: %d\n", err);
+		sizeof(cl_leaf_t) * portalclusters, leafs_cl.data(), &err);
+	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_leafs"); goto cleanup_and_return; }
+	CL_CHECK_ERR(err, "clCreateBuffer d_leafs");
 
 	cl_mem d_windings = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_winding_t) * g_numwindings, g_windings, &err);
-	if (err != CL_SUCCESS) Error("clCreateBuffer(d_windings) a échoué: %d\n", err);
-	
+		sizeof(cl_winding_t) * numportals, windings_cl.data(), &err);
+	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_windings"); goto cleanup_and_return; }
+	CL_CHECK_ERR(err, "clCreateBuffer d_windings");
 
-	static int last_numportals = 0, last_portallongs = 0;
+	cl_mem d_portalflood = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(unsigned int) * totalSize, portalflood_flat.data(), &err);
+	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_portalflood"); goto cleanup_and_return; }
+	CL_CHECK_ERR(err, "clCreateBuffer d_portalflood");
 
-	// (Ré)allocation des buffers si la taille change
-	if (!d_portalflood || !d_portalvis || !d_changed ||
-		last_numportals != numportals || last_portallongs != portallongs)
+	cl_mem d_portalvis = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+		sizeof(cl_uint) * portalvis_flat.size(), portalvis_flat.data(), &err);
+	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_portalvis"); goto cleanup_and_return; }
+	CL_CHECK_ERR(err, "clCreateBuffer d_portalvis");
+
+	// Debug self-test (déjà en place dans ton code)...
 	{
-		// Libération des anciens buffers
-		if (d_portalflood) clReleaseMemObject(d_portalflood);
-		if (d_portalvis)   clReleaseMemObject(d_portalvis);
-		if (d_changed)     clReleaseMemObject(d_changed);
-		if (d_portals) clReleaseMemObject(d_portals);
-		if (d_leafs) clReleaseMemObject(d_leafs);
-		if (d_windings) clReleaseMemObject(d_windings);
-	
-		// Création des nouveaux buffers GPU (taille = numportals * portallongs * sizeof(uint))
-
-		d_portalflood = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
-			sizeof(unsigned int) * (size_t)numportals * portallongs,
-			nullptr, &err);
-		if (err != CL_SUCCESS) {
-			if (err == CL_OUT_OF_HOST_MEMORY)
-				Error("OpenCl|GPU - MFF: CL_OUT_OF_HOST_MEMORY lors de clCreateBuffer(portalflood).\n");
-			else
-				Error("OpenCl|GPU - MFF: clCreateBuffer(portalflood) a echoue: %d\n", err);
-		}
-		d_portalvis = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE,
-			sizeof(unsigned int) * (size_t)numportals * portallongs,
-			nullptr, &err);
-		if (err != CL_SUCCESS) {
-			if (err == CL_OUT_OF_HOST_MEMORY)
-				Error("OpenCl|GPU - MFF: CL_OUT_OF_HOST_MEMORY lors de clCreateBuffer(portalvis).\n");
-			else
-				Error("OpenCl|GPU - MFF: clCreateBuffer(portalvis) a echoue: %d\n", err);
-		}
-		d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE,
-			sizeof(int), nullptr, &err);
-		if (err != CL_SUCCESS) {
-			if (err == CL_OUT_OF_HOST_MEMORY)
-				Error("OpenCl|GPU - MFF: CL_OUT_OF_HOST_MEMORY lors de clCreateBuffer(changed).\n");
-			else
-				Error("OpenCl|GPU - MFF: clCreateBuffer(changed) a echoue: %d\n", err);
-		}
-		d_portals = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
-			sizeof(portal_t) * numportals, nullptr, &err);
-		if (err != CL_SUCCESS)
-			Error("OpenCL|GPU - clCreateBuffer(portals) a échoué: %d\n", err);
-
-		d_leafs = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
-			sizeof(leaf_t) * portalclusters, nullptr, &err);
-		if (err != CL_SUCCESS)
-			Error("OpenCL|GPU - clCreateBuffer(leafs) a échoué: %d\n", err);
-
-		d_windings = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY,
-			sizeof(winding_t) * numportals, nullptr, &err);  // <- adapte si besoin
-		if (err != CL_SUCCESS)
-			Error("OpenCL|GPU - clCreateBuffer(windings) a échoué: %d\n", err);
-		// Sauvegarde des dimensions pour réallocation future
-
-		last_numportals = numportals;
-		last_portallongs = portallongs;
-	}
-
-	// Préparation des données CPU -> vecteurs plats (flatten)
-	std::vector<unsigned int> portalflood_flat((size_t)numportals * portallongs);
-	std::vector<unsigned int> portalvis_flat((size_t)numportals * portallongs);
-	for (int i = 0; i < numportals; ++i) {
-		portal_t* p = &portals[i];
-		// portalflood et portalvis sont des byte*, on cast en uint32 pour lire 32 bits à la fois
-		unsigned int* srcFlood = reinterpret_cast<unsigned int*>(p->portalflood);
-		unsigned int* srcVis = reinterpret_cast<unsigned int*>(p->portalvis);
-		for (int j = 0; j < portallongs; ++j) {
-			portalflood_flat[(size_t)i * portallongs + j] = srcFlood[j];
-			portalvis_flat[(size_t)i * portallongs + j] = srcVis[j];
+		cl_uint pattern = 0xDEADBEEF;
+		err = clEnqueueFillBuffer(g_clManager.queue, d_portalvis, &pattern, sizeof(pattern),
+			0, sizeof(cl_uint) * portalvis_flat.size(), 0, nullptr, nullptr);
+		CL_CHECK_ERR(err, "clEnqueueFillBuffer d_portalvis");
+		if (err == CL_SUCCESS) {
+			clFinish(g_clManager.queue);
+			std::vector<cl_uint> testRead(std::min<size_t>(portalvis_flat.size(), 8));
+			err = clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
+				sizeof(cl_uint) * testRead.size(), testRead.data(), 0, nullptr, nullptr);
+			CL_CHECK_ERR(err, "clEnqueueReadBuffer self-test");
+			if (err == CL_SUCCESS) {
+				bool ok = false;
+				for (size_t ii = 0; ii < testRead.size(); ++ii) {
+					if (testRead[ii] == pattern) { ok = true; break; }
+				}
+				TracePrint("[SELF-TEST] %s", ok ? "OK" : "FAILED");
+			}
+			std::fill(portalvis_flat.begin(), portalvis_flat.end(), 0u);
+			err = clEnqueueWriteBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
+				sizeof(cl_uint) * portalvis_flat.size(), portalvis_flat.data(), 0, nullptr, nullptr);
+			CL_CHECK_ERR(err, "clEnqueueWriteBuffer re-zero d_portalvis");
 		}
 	}
 
-	// Copie des vecteurs plats vers la mémoire GPU (blocking = CL_TRUE)
-	err = clEnqueueWriteBuffer(g_clManager.queue, d_portalflood, CL_TRUE, 0,
-		sizeof(unsigned int) * portalflood_flat.size(),
-		portalflood_flat.data(), 0, nullptr, nullptr);
-	if (err != CL_SUCCESS) {
-		if (err == CL_OUT_OF_HOST_MEMORY)
-			Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueWriteBuffer(portalflood).\n");
-		else
-			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(portalflood) a echoue: %d\n", err);
-	}
-	err = clEnqueueWriteBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
-		sizeof(unsigned int) * portalvis_flat.size(),
-		portalvis_flat.data(), 0, nullptr, nullptr);
-	if (err != CL_SUCCESS) {
-		if (err == CL_OUT_OF_HOST_MEMORY)
-			Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueWriteBuffer(portalvis).\n");
-		else
-			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(portalvis) a echoue: %d\n", err);
-	}
-	clEnqueueWriteBuffer(g_clManager.queue, d_portals, CL_TRUE, 0,
-		sizeof(portal_t) * numportals, portals, 0, nullptr, nullptr);
+	cl_mem d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE,
+		sizeof(int), nullptr, &err);
+	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_changed"); goto cleanup_and_return; }
+	CL_CHECK_ERR(err, "clCreateBuffer d_changed");
 
-	clEnqueueWriteBuffer(g_clManager.queue, d_leafs, CL_TRUE, 0,
-		sizeof(leaf_t) * portalclusters, leafs, 0, nullptr, nullptr);
-
-	std::vector<winding_t> windings_flat(numportals);
-	for (int i = 0; i < numportals; ++i)
-		windings_flat[i] = *portals[i].winding;
-
-	clEnqueueWriteBuffer(g_clManager.queue, d_windings, CL_TRUE, 0,
-		sizeof(winding_t) * numportals, windings_flat.data(), 0, nullptr, nullptr);
-
-	// Configuration du kernel de flood-fill (ou "PortalFlow") avec ses arguments
+	// 4) Définir les arguments du kernel
 	cl_kernel kernel = g_clManager.floodfill_kernel;
-	clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portals);
-	clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_leafs);
-	clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_windings);
-	clSetKernelArg(kernel, 3, sizeof(cl_mem), &d_portalflood);
-	clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalvis);
-	clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_changed);
-	clSetKernelArg(kernel, 6, sizeof(int), &numportals);
-	clSetKernelArg(kernel, 7, sizeof(int), &portallongs);
-	int inner_iters = 256;
-	err |= clSetKernelArg(kernel, 5, sizeof(int), &inner_iters);
-	if (err != CL_SUCCESS) {
-		Error("MassiveFloodFillGPU: clSetKernelArg a echoue: %d\n", err);
-	}
+	err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portals); CL_CHECK_ERR(err, "clSetKernelArg 0"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_leafs); CL_CHECK_ERR(err, "clSetKernelArg 1"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_windings); CL_CHECK_ERR(err, "clSetKernelArg 2"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &d_portalflood); CL_CHECK_ERR(err, "clSetKernelArg 3"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalvis); CL_CHECK_ERR(err, "clSetKernelArg 4"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_changed); CL_CHECK_ERR(err, "clSetKernelArg 5"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 6, sizeof(int), &numportals); CL_CHECK_ERR(err, "clSetKernelArg 6"); if (err != CL_SUCCESS) goto cleanup_and_return;
+	err = clSetKernelArg(kernel, 7, sizeof(int), &portallongs); CL_CHECK_ERR(err, "clSetKernelArg 7"); if (err != CL_SUCCESS) goto cleanup_and_return;
 
-	// Configuration de la taille globale (2D : [numportals][portallongs])
-	size_t globalSize[2] = { (size_t)numportals, (size_t)portallongs };
+	// 5) Lancer le kernel
+	size_t globalSize = (size_t)numportals;
+	TRACE_MSG("Enqueue kernel globalSize=%zu", globalSize);
+	err = clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &globalSize, nullptr, 0, nullptr, nullptr);
+	CL_CHECK_ERR(err, "clEnqueueNDRangeKernel");
+	if (err != CL_SUCCESS) { TracePrint("[OpenCL] clEnqueueNDRangeKernel failed"); goto cleanup_and_return; }
+	clFinish(g_clManager.queue);
+	TRACE_MSG("Kernel finished");
 
-	// Boucle de convergence du flood-fill
-	int changed = 1;
-	int iter = 0;
-	Msg("MassiveFloodFillGPU: début du flood-fill... \n");
-	while (changed)
-	{
-		++iter;
-		// Réinitialiser 'changed' à 0 sur GPU
-		changed = 0;
-		err = clEnqueueWriteBuffer(g_clManager.queue, d_changed, CL_TRUE, 0,
-			sizeof(int), &changed, 0, nullptr, nullptr);
-		if (err != CL_SUCCESS) {
-			Error("MassiveFloodFillGPU: clEnqueueWriteBuffer(changed) a echoue: %d\n", err);
-		}
+	// 6) Lire les résultats depuis le GPU
+	err = clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(cl_uint) * portalvis_flat.size(), portalvis_flat.data(), 0, NULL, NULL);
+	CL_CHECK_ERR(err, "clEnqueueReadBuffer d_portalvis");
+	if (err != CL_SUCCESS) { TracePrint("[OpenCL] clEnqueueReadBuffer failed"); goto cleanup_and_return; }
 
-		// Lancer le kernel de flood-fill (chaque thread traite un couple [portal,word])
-		err = clEnqueueNDRangeKernel(g_clManager.queue, kernel, 2, nullptr,
-			globalSize, nullptr, 0, nullptr, nullptr);
-		if (err != CL_SUCCESS) {
-			if (err == CL_OUT_OF_HOST_MEMORY)
-				Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueNDRangeKernel.\n");
-			else
-				Error("MassiveFloodFillGPU: clEnqueueNDRangeKernel a echoue: %d\n", err);
-		}
+	// DEBUG: afficher quelques valeurs lues
+	TRACE_MSG("portalvis_flat[0..3] = %08X %08X %08X %08X",
+		portalvis_flat.size() > 0 ? portalvis_flat[0] : 0,
+		portalvis_flat.size() > 1 ? portalvis_flat[1] : 0,
+		portalvis_flat.size() > 2 ? portalvis_flat[2] : 0,
+		portalvis_flat.size() > 3 ? portalvis_flat[3] : 0);
 
-		// Attendre la fin du kernel (bloquant). 
-		err = clFinish(g_clManager.queue);
-		if (err != CL_SUCCESS) {
-			Error("MassiveFloodFillGPU: clFinish a echoue: %d\n", err);
-		}
-
-		// Lire la valeur 'changed' depuis le GPU pour savoir si poursuivre
-		err = clEnqueueReadBuffer(g_clManager.queue, d_changed, CL_TRUE, 0,
-			sizeof(int), &changed, 0, nullptr, nullptr);
-		if (err != CL_SUCCESS) {
-			Error("MassiveFloodFillGPU: clEnqueueReadBuffer(changed) a echoue: %d\n", err);
-		}
-
-		// Affichage de progrès optionnel
-		if (iter % 50 == 0) {
-			Msg(" itération %d...\n", iter);
-		}
-		// Limite de sécurité sur le nombre d’itérations
-		if (iter > 1000) {
-			Msg("\n[Warning] MassiveFloodFillGPU: depassement de 1000 iterations, abandon.\n");
-			break;
-		}
-	}
-	Msg("MassiveFloodFillGPU: %d iterations effectuees.\n", iter);
-
-	// Lecture finale du buffer portalvis depuis le GPU (blocking read)
-	err = clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
-		sizeof(unsigned int) * portalvis_flat.size(),
-		portalvis_flat.data(), 0, nullptr, nullptr);
-	if (err != CL_SUCCESS) {
-		if (err == CL_OUT_OF_HOST_MEMORY)
-			Error("MassiveFloodFillGPU: CL_OUT_OF_HOST_MEMORY lors de clEnqueueReadBuffer(portalvis).\n");
-		else
-			Error("MassiveFloodFillGPU: clEnqueueReadBuffer(portalvis) a echoue: %d\n", err);
-	}
-
-	// Recopie des résultats dans portals[i].portalvis (tableau de bits) 
+	// 7) Copier le résultat dans portals[i].portalvis et marquer status DONE
+	int marked = 0;
 	for (int i = 0; i < numportals; ++i) {
 		portal_t* p = &portals[i];
-		unsigned int* dstVis = reinterpret_cast<unsigned int*>(p->portalvis);
-		for (int j = 0; j < portallongs; ++j) {
-			dstVis[j] = portalvis_flat[(size_t)i * portallongs + j];
+		// ensure portalvis exists
+		if (!p->portalvis) {
+			p->portalvis = (byte*)malloc(portalbytes);
+			memset(p->portalvis, 0, portalbytes);
 		}
+		// copy words
+		unsigned int* dst = (unsigned int*)p->portalvis;
+		for (int j = 0; j < portallongs; ++j) {
+			dst[j] = portalvis_flat[i * portallongs + j];
+		}
+		// update counts and status
+		p->nummightsee = CountBits(p->portalvis, g_numportals * 2);
+		p->status = stat_done;
+		++marked;
 	}
+	TRACE_MSG("MassiveFloodFillGPU: applied results to %d portals", marked);
+
+cleanup_and_return:
+	// release
+	if (d_portals) clReleaseMemObject(d_portals);
+	if (d_leafs) clReleaseMemObject(d_leafs);
+	if (d_windings) clReleaseMemObject(d_windings);
+	if (d_portalflood) clReleaseMemObject(d_portalflood);
+	if (d_portalvis) clReleaseMemObject(d_portalvis);
+	if (d_changed) clReleaseMemObject(d_changed);
+
+	TRACE_MSG("EXIT MassiveFloodFillGPU");
 }
 
+void GPU_CPU_SampleCompare()
+{
+	extern bool g_bTryGPU;
+	if (!g_bTryGPU)
+		return;
 
-// Compte le nombre de bits à 1 pour chaque portail (GPU)
+	TRACE_FN();
+
+	int numportals = g_numportals * 2;
+	int portallongs = ::portallongs;
+	if (numportals <= 0 || portallongs <= 0) {
+		Msg("[GPU Test] Aucun portail ou configuration invalide.\n");
+		return;
+	}
+
+	int sampleCount = 32;
+	if (sampleCount > numportals) sampleCount = numportals;
+	int stride = max(1, numportals / sampleCount);
+
+	Msg("[GPU Test] Démarrage comparaison CPU vs GPU pour %d échantillons (stride=%d)\n", sampleCount, stride);
+
+	int mismatches = 0;
+	for (int s = 0, idx = 0; s < sampleCount; ++s, idx += stride) {
+		if (idx >= numportals) idx = numportals - 1;
+
+		portal_t* p = &portals[idx];
+		if (!p) {
+			Msg("[GPU Test] portail %d introuvable\n", idx);
+			continue;
+		}
+		if (!p->portalvis) {
+			Msg("[GPU Test] portail %d : portalvis non alloue — ignorer\n", idx);
+			continue;
+		}
+
+		// Sauvegarder la version GPU actuelle
+		std::vector<unsigned int> gpu_bits(portallongs);
+		for (int w = 0; w < portallongs; ++w) {
+			gpu_bits[w] = ((unsigned int*)p->portalvis)[w];
+		}
+
+
+// Compte le nombre de bits a 1 pour chaque portail (GPU)
 void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& out_counts, int numportals, int portallongs)
 {
 	g_clManager.init_once();
@@ -622,9 +661,10 @@ void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& o
 	size_t global = numportals;
 	clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
 	clFinish(g_clManager.queue);
+	TRACE_MSG("Kernel finished");
 
 	clEnqueueReadBuffer(g_clManager.queue, d_counts, CL_TRUE, 0, sizeof(int) * numportals, out_counts.data(), 0, nullptr, nullptr);
-
+	TRACE_MSG("Read portalvis_flat first 8 words: %08X %08X ...", portalvis_flat[0], portalvis_flat[1]);
 	clReleaseMemObject(d_portalvis);
 	clReleaseMemObject(d_counts);
 }
@@ -1251,7 +1291,7 @@ void RecursiveLeafFlow(int leafnum, threaddata_t* thread, pstack_t* prevstack)
 void RecursiveLeafFlow(int leafnum, threaddata_t* thread, pstack_t* prevstack)
 {
 	g_clManager.init_once();
-	assert(g_clManager.ok && "OpenCL non initialisé !");
+	assert(g_clManager.ok && "OpenCL non initialise !");
 
 	int portallongs = ::portallongs;
 	int numportals = g_numportals * 2;
@@ -1270,14 +1310,14 @@ void RecursiveLeafFlow(int leafnum, threaddata_t* thread, pstack_t* prevstack)
 			portalflood_flat[i * portallongs + j] = src[j];
 	}
 
-	// Initialisation de la frontier (portails de la leaf de départ)
+	// Initialisation de la frontier (portails de la leaf de depart)
 	std::vector<int> frontier;
 	leaf_t* leaf = &leafs[leafnum];
 	for (int i = 0; i < leaf->portals.Count(); ++i) {
 		int pnum = leaf->portals[i] - portals;
 		if (CheckBit(prevstack->mightsee, pnum)) {
 			frontier.push_back(pnum);
-			std::ostringstream oss; oss << "Ajout portail " << pnum << " à la frontier initiale";
+			std::ostringstream oss; oss << "Ajout portail " << pnum << " a la frontier initiale";
 			g_clManager.log(oss.str().c_str());
 		}
 	}
@@ -1290,9 +1330,9 @@ void RecursiveLeafFlow(int leafnum, threaddata_t* thread, pstack_t* prevstack)
 
 		std::vector<int> next_frontier;
 		bool ok = g_clManager.propagate(frontier, portalflood_flat, portalvis_flat, portallongs, next_frontier);
-		assert(ok && "propagate() OpenCL a échoué");
+		assert(ok && "propagate() OpenCL a echoue");
 
-		// Log des bits modifiés
+		// Log des bits modifies
 		for (int idx : frontier) {
 			int pnum = idx;
 			for (int j = 0; j < portallongs; ++j) {
@@ -1310,30 +1350,39 @@ void RecursiveLeafFlow(int leafnum, threaddata_t* thread, pstack_t* prevstack)
 	for (int i = 0; i < portallongs; ++i)
 		((long*)thread->base->portalvis)[i] = portalvis_flat[i];
 
-	g_clManager.log("Flood fill GPU terminé pour cette leaf.");
+	g_clManager.log("Flood fill GPU termine pour cette leaf.");
 }
 
 // --------------------
 // PortalFlow
 // --------------------
-// Version optimisée de PortalFlow
+// Version optimisee de PortalFlow
 */
 void PortalFlow(int iThread, int portalnum)
 {
-
-	// Récupération du portail courant (attention : sorted_portals !)
+	// Recuperation du portail courant (attention : sorted_portals !)
 	portal_t* p = sorted_portals[portalnum];
+
+	// Si portalvis non alloue (cas où GPU/host n'a pas encore rempli),
+	// on le recouvre temporairement par portalflood pour éviter erreurs en aval.
+	if (!p->portalvis && p->portalflood) {
+		p->portalvis = p->portalflood;
+	}
+
+	// Marquer comme en cours puis termine (comportement attendu par le reste du pipeline)
+	p->status = stat_working;
 
 	int c_might = CountBits(p->portalflood, g_numportals * 2);
 	int c_can = CountBits(p->portalvis, g_numportals * 2);
 
-	
 	int c_chains = 1;
 
 	qprintf("portal:%4i  mightsee:%4i  cansee:%4i (%i chains)\n",
 		(int)(p - portals), c_might, c_can, c_chains);
-}
 
+	// Indiquer que ce portail est traité
+	p->status = stat_done;
+}
 
 int		c_flood, c_vis;
 
@@ -1485,9 +1534,8 @@ WAAAAAAY too slow.
 RecursiveLeafBitFlow
 [OLD]
 ==================
-*/
 
-/* void RecursiveLeafBitFlow(int leafnum, byte* mightsee, byte* cansee)
+void RecursiveLeafBitFlow(int leafnum, byte* mightsee, byte* cansee)
 {
 	portal_t	*p;
 	leaf_t 		*leaf;

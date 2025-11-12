@@ -1,11 +1,8 @@
 ﻿//========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: 
-//
 // $NoKeywords: $
-//
 //=============================================================================//
-// vis.c
 
 #include <windows.h>
 #include "vis.h"
@@ -24,39 +21,33 @@
 #include "byteswap.h"
 #include "flow_gpu.h"
 
+int g_numportals;
+int portalclusters;
 
+char inbase[32];
+portal_t* portals;
+leaf_t* leafs;
 
-int			g_numportals;
-int			portalclusters;
+int c_portaltest, c_portalpass, c_portalcheck;
+byte* uncompressedvis;
+byte* vismap, * vismap_p, * vismap_end;
+int originalvismapsize;
 
-char		inbase[32];
+int leafbytes;
+int leaflongs;
+int portalbytes, portallongs;
 
-portal_t	*portals;
-leaf_t		*leafs;
+bool fastvis;
+bool nosort;
+int totalvis;
+portal_t* sorted_portals[MAX_MAP_PORTALS * 2];
+bool g_bUseRadius = false;
+double g_VisRadius = 4096.0 * 4096.0;
+bool g_bLowPriority = false;
+bool g_bDebugMode = false;
+bool g_bTryGPU = false;
 
-int			c_portaltest, c_portalpass, c_portalcheck;
-
-byte		*uncompressedvis;
-
-byte		*vismap, *vismap_p, *vismap_end;	// past visfile
-int			originalvismapsize;
-
-int			leafbytes;				// (portalclusters+63)>>3
-int			leaflongs;
-
-int			portalbytes, portallongs;
-
-bool		fastvis;
-bool		nosort;
-
-int			totalvis;
-
-portal_t	*sorted_portals[MAX_MAP_PORTALS*2];
-
-bool		g_bUseRadius = false;
-double		g_VisRadius = 4096.0f * 4096.0f;
-
-bool		g_bLowPriority = false;
+extern void GPU_CPU_SampleCompare();
 
 //=============================================================================
 
@@ -291,26 +282,43 @@ CalcPortalVis
 */
 void CalcPortalVis() {
 	if (fastvis) {
-		// (chemin existant pour fastvis, on ne le modifie pas)
-		for (int i = 0; i < g_numportals * 2; i++) { portals[i].portalvis = portals[i].portalflood; portals[i].status = stat_done; }
+		for (int i = 0; i < g_numportals * 2; i++) {
+			portals[i].portalvis = portals[i].portalflood;
+			portals[i].status = stat_done;
+		}
 		return;
 	}
+
+	// Lire options runtime depuis la ligne de commande
+	g_bDebugMode = (CommandLine()->FindParm("-debug") != 0);
+	g_bTryGPU = (CommandLine()->FindParm("-TryGPU") != 0);
+
 	if (CommandLine()->CheckParm("-nogpu")) {
-		// Option éventuelle pour forcer CPU
+		// Forcer le CPU
 		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow);
 	}
 	else {
-		MassiveFloodFillGPU();
+		// Tentative GPU
+		g_clManager.init_once();
+		// Si l'init OpenCL a échoué, init_once marque g_clManager.ok=false
+		if (!g_clManager.ok) {
+			Msg("[OpenCL|GPU-Mod] OpenCL non disponible, fallback CPU\n");
+			RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow);
+		}
+		else {
+			MassiveFloodFillGPU();
+			// Optionnel : échantillonnage CPU vs GPU pour vérification
+			if (g_bTryGPU) {
+				GPU_CPU_SampleCompare();
+			}
+		}
 	}
 }
 
-void CalcVisTrace (void)
-{
-    RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
-	BuildTracePortals( g_TraceClusterStart );
-	// NOTE: We only schedule the one-way portals out of the start cluster here
-	// so don't run g_numportals*2 in this case
-	RunThreadsOnIndividual (g_numportals, true, PortalFlow);
+void CalcVisTrace(void) {
+	RunThreadsOnIndividual(g_numportals * 2, true, BasePortalVis);
+	BuildTracePortals(g_TraceClusterStart);
+	RunThreadsOnIndividual(g_numportals, true, PortalFlow);
 }
 
 
@@ -960,11 +968,15 @@ int ParseCommandLine( int argc, char **argv )
 		{
 			++i;
 		}
-		// Mise à jour 26/08/2025 : ajout du support de l'option -vproject qui est un peu "deprecated" de nos temps :-)
+		// Mise a jour 26/08/2025 : ajout du support de l'option -vproject qui est un peu "deprecated" de nos temps :-)
 		else if (!Q_stricmp( argv[i], "-vproject")) 
 		{
 			Msg("Please, use -game between -vproject !\n");
 			++i;
+		}
+		else if (!Q_stricmp(argv[i], "-nogpu"))
+		{
+			//Nothing to do here because the check is done directly in CalcPortalVis
 		}
 
 		else if ( !Q_stricmp( argv[i], "-allowdebug" ) || !Q_stricmp( argv[i], "-steam" ) )
@@ -977,7 +989,7 @@ int ParseCommandLine( int argc, char **argv )
 #ifdef MPI
 		else if ( !Q_strncasecmp( argv[i], "-mpi", 4 ) || !Q_strncasecmp( argv[i-1], "-mpi", 4 ) )
 		{
-			// Mise à jour 26/08/2025 : désactivation du support de MPI car pas compatible avec le compilateur GMOD
+			// Mise a jour 26/08/2025 : desactivation du support de MPI car pas compatible avec le compilateur GMOD
 			if ( stricmp( argv[i], "-mpi" ) == 0 )
 				Msg("MPI is not compatible with GMOD compiler\n");
 			Msg("The MPI will not be used even if you actived the option :) \n");
@@ -1043,6 +1055,7 @@ void PrintUsage( int argc, char **argv )
 		"  -FullMinidumps  : Write large minidumps on crash.\n"
 		"  -x360		   : Generate Xbox360 version of vsp\n"
 		"  -nox360		   : Disable generation Xbox360 version of vsp (default)\n"
+		"  -nogpu          : Forcer l'utilisation du fallback version CPU (Old).\n"
 		"\n"
 #if 1 // Disabled for the initial SDK release with VMPI so we can get feedback from selected users.
 		);
@@ -1227,6 +1240,8 @@ int main (int argc, char **argv)
 {
 	SetConsoleOutputCP(CP_UTF8);
 	CommandLine()->CreateCmdLine( argc, argv );
+
+	Msg("[DEBUG] Debut du programme VVIS-GPU, init OpenCL...\n");
 
 	MathLib_Init( 2.2f, 2.2f, 0.0f, 1.0f, false, false, false, false );
 	InstallAllocationFunctions();

@@ -8,6 +8,7 @@
 #include <sstream>
 #include <cstdint>
 
+// Structures partagees avec le kernel OpenCL
 struct cl_plane_t {
     float normal[3];
     float dist;
@@ -20,10 +21,10 @@ struct cl_winding_t {
 
 struct cl_portal_t {
     cl_plane_t plane;
-    int leaf; // index du leaf voisin
+    int leaf;
     float origin[3];
     float radius;
-    int winding_idx; // index dans le tableau global de windings
+    int winding_idx;
 };
 
 struct cl_leaf_t {
@@ -31,7 +32,6 @@ struct cl_leaf_t {
     int num_portals;
 };
 
-// Définition complète de la structure
 struct OpenCLManager {
     cl_platform_id platform = nullptr;
     cl_device_id device = nullptr;
@@ -45,7 +45,12 @@ struct OpenCLManager {
     void log(const std::string& s) { std::cout << "[OpenCL|GPU-Mod] " << s << std::endl; }
     void init_once();
     void cleanup();
+
+
 };
+
+
+
 extern OpenCLManager g_clManager;
 
 void MassiveFloodFillGPU();
