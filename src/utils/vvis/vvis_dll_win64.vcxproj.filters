@@ -238,5 +238,6 @@
     <None Include="vvis_dll.vpc">
       <Filter>VPC Scripts</Filter>
     </None>
+    <None Include="kernel_test(no_compiled).cl" />
   </ItemGroup>
 </Project>

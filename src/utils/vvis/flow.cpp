@@ -21,12 +21,9 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
-#include <threads.h>
 #include <cstdarg>
-#include <mutex>
-#include <atomic>
-#include <chrono>
-#include <fstream>
+#include <iomanip>
+#include <icommandline.h>
 
 static std::mutex g_trace_mutex;
 static std::ofstream g_trace_file;
@@ -86,12 +83,25 @@ struct TraceScope {
 #define TRACE_FN() TraceScope _trace_scope_obj(__FUNCTION__)
 #define TRACE_MSG(fmt, ...) TracePrint(fmt, ##__VA_ARGS__)
 
-// Helper pour OpenCL : logue l'erreur (ne termine pas)
-#define CL_CHECK_ERR(err, msg) \
-    do { \
-        if ((err) != CL_SUCCESS) { TracePrint("[CL ERR] %s => %d", msg, (int)(err)); } \
-        else { TracePrint("[CL OK]  %s", msg); } \
-    } while(0)
+// Helper de logging OpenCL : écrit via TracePrint si -debug, sinon sur cerr.
+inline void CLCheckAndLog(cl_int err, const char* msg)
+{
+	extern bool g_bDebugMode; // défini dans vvis.cpp
+	if (err != CL_SUCCESS) {
+		if (g_bDebugMode) {
+			TracePrint("[CL ERR] %s => %d", msg, (int)err);
+		}
+		else {
+			std::cerr << "[CL ERR] " << msg << " => " << (int)err << std::endl;
+		}
+	}
+	else {
+		if (g_bDebugMode) {
+			TracePrint("[CL OK]  %s", msg);
+		}
+	}
+}
+#define CL_CHECK_ERR(err, msg) CLCheckAndLog((err), (msg))
 
 // Kernel OpenCL optimise (convergence device-side, logs via flags)
 static const char* floodfill_kernel_src = R"CL(
@@ -616,13 +626,22 @@ void GPU_CPU_SampleCompare()
 		return;
 	}
 
-	int sampleCount = 32;
-	if (sampleCount > numportals) sampleCount = numportals;
-	int stride = max(1, numportals / sampleCount);
+	// Mode exhaustif avec -TryGPUAll
+	bool exhaustive = (CommandLine()->FindParm("-TryGPUAll") != 0);
 
-	Msg("[GPU Test] Démarrage comparaison CPU vs GPU pour %d échantillons (stride=%d)\n", sampleCount, stride);
+	int sampleCount = exhaustive ? numportals : 32;
+	if (sampleCount > numportals) sampleCount = numportals;
+	int stride = exhaustive ? 1 : std::max(1, numportals / sampleCount);
+
+	Msg("[GPU Test] Démarrage comparaison CPU vs GPU pour %d échantillons (stride=%d) %s\n",
+		sampleCount, stride, exhaustive ? "(exhaustif)" : "");
 
 	int mismatches = 0;
+	int checked = 0;
+	// Statistiques : compte de bits GPU globalement
+	uint64_t totalBitsGPU = 0;
+	uint64_t totalBitsCPU = 0;
+
 	for (int s = 0, idx = 0; s < sampleCount; ++s, idx += stride) {
 		if (idx >= numportals) idx = numportals - 1;
 
@@ -635,13 +654,122 @@ void GPU_CPU_SampleCompare()
 			Msg("[GPU Test] portail %d : portalvis non alloue — ignorer\n", idx);
 			continue;
 		}
-
-		// Sauvegarder la version GPU actuelle
-		std::vector<unsigned int> gpu_bits(portallongs);
-		for (int w = 0; w < portallongs; ++w) {
-			gpu_bits[w] = ((unsigned int*)p->portalvis)[w];
+		if (!p->portalflood) {
+			Msg("[GPU Test] portail %d : portalflood non alloue — ignorer\n", idx);
+			continue;
 		}
 
+		// Lire GPU bits (tel que stocké après MassiveFloodFillGPU)
+		std::vector<uint32_t> gpu_bits(portallongs);
+		for (int w = 0; w < portallongs; ++w) {
+			gpu_bits[w] = ((uint32_t*)p->portalvis)[w];
+		}
+
+		// Sauvegarder portalflood pour dump si besoin
+		std::vector<uint32_t> flood_bits(portallongs);
+		for (int w = 0; w < portallongs; ++w) {
+			flood_bits[w] = ((uint32_t*)p->portalflood)[w];
+		}
+
+		// Trouver l'indice dans sorted_portals correspondant à &portals[idx]
+		int sortedIndex = -1;
+		for (int si = 0; si < g_numportals * 2; ++si) {
+			if (sorted_portals[si] == &portals[idx]) { sortedIndex = si; break; }
+		}
+		if (sortedIndex == -1) {
+			Msg("[GPU Test] portail %d : introuvable dans sorted_portals, ignorer\n", idx);
+			continue;
+		}
+
+		// Sauvegarder une copie GPU avant d'appeler PortalFlow (PortalFlow peut écrire p->portalvis)
+		std::vector<uint32_t> gpu_before = gpu_bits;
+
+		// Calcul CPU local pour ce portail (appelant PortalFlow)
+		PortalFlow(0, sortedIndex);
+
+		// Lire CPU bits (après PortalFlow)
+		std::vector<uint32_t> cpu_bits(portallongs);
+		for (int w = 0; w < portallongs; ++w) {
+			cpu_bits[w] = ((uint32_t*)p->portalvis)[w];
+		}
+
+		// Compte bits pour stats
+		auto CountBitsVector = [&](const std::vector<uint32_t>& v)->uint64_t {
+			uint64_t c = 0;
+			for (uint32_t x : v) c += (uint64_t)__popcnt(x);
+			return c;
+			};
+		uint64_t gpuCount = CountBitsVector(gpu_before);
+		uint64_t cpuCount = CountBitsVector(cpu_bits);
+		totalBitsGPU += gpuCount;
+		totalBitsCPU += cpuCount;
+
+		// Comparer mot à mot
+		bool equal = true;
+		int first_diff_word = -1;
+		for (int w = 0; w < portallongs; ++w) {
+			if (cpu_bits[w] != gpu_before[w]) { equal = false; first_diff_word = w; break; }
+		}
+
+		++checked;
+		if (equal) {
+			Msg("[GPU Test] portail %6d : OK (bits GPU=%llu CPU=%llu)\n", idx, (unsigned long long)gpuCount, (unsigned long long)cpuCount);
+		}
+		else {
+			++mismatches;
+			Msg("[GPU Test] portail %6d : MISMATCH (premier mot diff = %d) GPUbits=%llu CPUbits=%llu\n",
+				idx, first_diff_word, (unsigned long long)gpuCount, (unsigned long long)cpuCount);
+
+			// Dump binaire pour analyse (GPU, CPU, portalflood)
+			char fname[256];
+			snprintf(fname, sizeof(fname), "pvis_gpu_%d.bin", idx);
+			{
+				std::ofstream f(fname, std::ios::binary);
+				if (f.is_open()) f.write(reinterpret_cast<const char*>(gpu_before.data()), portallongs * sizeof(uint32_t));
+			}
+			snprintf(fname, sizeof(fname), "pvis_cpu_%d.bin", idx);
+			{
+				std::ofstream f(fname, std::ios::binary);
+				if (f.is_open()) f.write(reinterpret_cast<const char*>(cpu_bits.data()), portallongs * sizeof(uint32_t));
+			}
+			snprintf(fname, sizeof(fname), "portalflood_%d.bin", idx);
+			{
+				std::ofstream f(fname, std::ios::binary);
+				if (f.is_open()) f.write(reinterpret_cast<const char*>(flood_bits.data()), portallongs * sizeof(uint32_t));
+			}
+
+			// Print a small hex window around first difference for quick reading
+			int start = std::max(0, first_diff_word - 4);
+			int end = std::min(portallongs - 1, first_diff_word + 4);
+			Msg("   mot#    GPU(hex)     CPU(hex)\n");
+			for (int w = start; w <= end; ++w) {
+				Msg("   %5d  %08x  %08x\n", w, gpu_before[w], cpu_bits[w]);
+			}
+			Msg("   Dumps écrits: pvis_gpu_%d.bin pvis_cpu_%d.bin portalflood_%d.bin\n", idx, idx, idx);
+			// If not exhaustive, continue checking others; if exhaustive, still continue to produce full report.
+		}
+
+		// Restaurer la valeur GPU dans p->portalvis pour préserver l'état (important)
+		for (int w = 0; w < portallongs; ++w) {
+			((uint32_t*)p->portalvis)[w] = gpu_before[w];
+		}
+		p->status = stat_done;
+
+		// Si on n'est pas en mode exhaustif et trop de mismatches, on s'arrête pour investigation
+		if (!exhaustive && mismatches > 10) {
+			Msg("[GPU Test] Trop de mismatches (%d) - arrêt precoce du test\n", mismatches);
+			break;
+		}
+	}
+
+	Msg("[GPU Test] Comparaison terminee : %d mismatches sur %d vérifiés\n", mismatches, checked);
+	Msg("[GPU Test] Bits totaux (GPU=%llu CPU=%llu)\n", (unsigned long long)totalBitsGPU, (unsigned long long)totalBitsCPU);
+
+	if (mismatches == 0) Msg("[GPU Test] Aucune difference detectee sur les echantillons.\n");
+	else Msg("[GPU Test] %d differences detectees. Dumps générés pour les cas.\n", mismatches);
+
+	TRACE_MSG("EXIT  GPU_CPU_SampleCompare");
+}
 
 // Compte le nombre de bits a 1 pour chaque portail (GPU)
 void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& out_counts, int numportals, int portallongs)
@@ -664,7 +792,12 @@ void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& o
 	TRACE_MSG("Kernel finished");
 
 	clEnqueueReadBuffer(g_clManager.queue, d_counts, CL_TRUE, 0, sizeof(int) * numportals, out_counts.data(), 0, nullptr, nullptr);
-	TRACE_MSG("Read portalvis_flat first 8 words: %08X %08X ...", portalvis_flat[0], portalvis_flat[1]);
+	if (portalvis_flat.size() >= 2) {
+		TRACE_MSG("Read portalvis_flat first 2 words: %08X %08X ...", portalvis_flat[0], portalvis_flat[1]);
+	}
+	else {
+		TRACE_MSG("Read portalvis_flat size: %zu", portalvis_flat.size());
+	}
 	clReleaseMemObject(d_portalvis);
 	clReleaseMemObject(d_counts);
 }

@@ -268,7 +268,39 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 	memcpy( dest, compressed, numbytes );
 
 	// check vis data
-	DecompressVis( vismap + dvis->bitofs[clusternum][DVIS_PVS], compressed );
+	byte verify[MAX_MAP_LEAFS / 8];
+	// DecompressVis(srcCompressed, destUncompressed)
+	DecompressVis(vismap + dvis->bitofs[clusternum][DVIS_PVS], verify);
+
+	// Comparaison binaire
+	if (memcmp(verify, uncompressed, leafbytes) != 0) {
+		Warning("VVIS VERIFY MISMATCH: cluster %d, leafbytes=%d, numbytes=%d\n", clusternum, leafbytes, numbytes);
+
+		// Écrire des fichiers de dump pour analyse
+		char fname[256];
+		snprintf(fname, sizeof(fname), "vvis_uncompressed_cluster_%d.bin", clusternum);
+		FILE* f = fopen(fname, "wb");
+		if (f) { fwrite(uncompressed, 1, leafbytes, f); fclose(f); }
+
+		snprintf(fname, sizeof(fname), "vvis_verify_cluster_%d.bin", clusternum);
+		f = fopen(fname, "wb");
+		if (f) { fwrite(verify, 1, leafbytes, f); fclose(f); }
+
+		snprintf(fname, sizeof(fname), "vvis_compressed_cluster_%d.bin", clusternum);
+		f = fopen(fname, "wb");
+		if (f) { fwrite(compressed, 1, numbytes, f); fclose(f); }
+
+		Warning("Dumps écrits : %s, %s, %s\n",
+			(vsprintf(fname, "%s", fname), "vvis_uncompressed_cluster_<n>.bin"),
+			"vvis_verify_cluster_<n>.bin",
+			"vvis_compressed_cluster_<n>.bin");
+
+		// Optionnel : arrêter tôt pour inspection (décommente si tu veux stopper)
+		// Error("VVIS verification failed for cluster %d - see dumps\n", clusternum);
+	}
+	else {
+		qprintf("VVIS VERIFY OK for cluster %d", clusternum);
+	}
 
 	return optimized;
 }
@@ -472,12 +504,12 @@ void LoadPortals (char *name)
 		Error("The map overflows the max portal count (%d of max %d)!\n", g_numportals, MAX_PORTALS / 2 );
 	}
 
-	// these counts should take advantage of 64 bit systems automatically
-	leafbytes = ((portalclusters+63)&~63)>>3;
-	leaflongs = leafbytes/sizeof(long);
-	
-	portalbytes = ((g_numportals*2+63)&~63)>>3;
-	portallongs = portalbytes/sizeof(long);
+	// tailles en octets : arrondir au prochain octet (8 bits)
+	leafbytes = ((portalclusters + 7) >> 3);            // ceil(portalclusters / 8)
+	leaflongs = (leafbytes + (int)sizeof(long) - 1) / (int)sizeof(long); // rounds up to whole long words
+
+	portalbytes = ((g_numportals * 2 + 7) >> 3);        // ceil((numportals*2) / 8)
+	portallongs = (portalbytes + (int)sizeof(long) - 1) / (int)sizeof(long);
 
 // each file portal is split into two memory portals
 	portals = (portal_t*)malloc(2*g_numportals*sizeof(portal_t));
@@ -974,10 +1006,24 @@ int ParseCommandLine( int argc, char **argv )
 			Msg("Please, use -game between -vproject !\n");
 			++i;
 		}
+
+
+		/*############################################ MOD OPEN CL/GPU ############################################*/
+
 		else if (!Q_stricmp(argv[i], "-nogpu"))
 		{
-			//Nothing to do here because the check is done directly in CalcPortalVis
+			// Forcer le fallback CPU
 		}
+		else if (!Q_stricmp(argv[i], "-TryGPU"))
+		{
+			// Permet de comparer les résultats GPU vs CPU pour verification
+		}
+		else if (!Q_stricmp(argv[i], "-debug"))
+		{
+			// Active les messages de debug GPU/OpenCL
+		}
+
+		/*############################################ MOD OPEN CL/GPU ############################################*/
 
 		else if ( !Q_stricmp( argv[i], "-allowdebug" ) || !Q_stricmp( argv[i], "-steam" ) )
 		{
@@ -1056,6 +1102,8 @@ void PrintUsage( int argc, char **argv )
 		"  -x360		   : Generate Xbox360 version of vsp\n"
 		"  -nox360		   : Disable generation Xbox360 version of vsp (default)\n"
 		"  -nogpu          : Forcer l'utilisation du fallback version CPU (Old).\n"
+		"  -TryGPU		   : Permet de comparer les résultats GPU vs CPU pour verification (peut ralentir le processus de quelques secondes/minutes).\n"
+		"  -debug 		   : Active les messages de debug GPU/OpenCL.\n"
 		"\n"
 #if 1 // Disabled for the initial SDK release with VMPI so we can get feedback from selected users.
 		);
@@ -1198,6 +1246,51 @@ int RunVVis( int argc, char **argv )
 
 		visdatasize = vismap_p - dvisdata;
 		Msg ("visdatasize:%i  compressed from %i\n", visdatasize, originalvismapsize*2);
+		byte verify[MAX_MAP_LEAFS / 8];
+		bool anyMismatch = false;
+
+		for (int ci = 0; ci < portalclusters; ++ci) {
+			// sécurité : bitofs peut contenir 0 pour clusters vides, skip si hors limites
+			int ofs = dvis->bitofs[ci][DVIS_PVS];
+			if (ofs <= 0 || ofs >= MAX_MAP_VISIBILITY) {
+				// clusters vides acceptable ; mais log si inconsistant
+				continue;
+			}
+			byte* srcCompressed = vismap + ofs;
+			// Décompresser dans verify
+			DecompressVis(srcCompressed, verify);
+			byte* expected = uncompressedvis + ci * leafbytes;
+			if (memcmp(verify, expected, leafbytes) != 0) {
+				Warning("POST-WRITE VERIFY MISMATCH: cluster %d (leafbytes=%d)\n", ci, leafbytes);
+				// dumps pour analyse
+				char fname[256];
+				snprintf(fname, sizeof(fname), "post_uncompressed_cluster_%d.bin", ci);
+				FILE* f = fopen(fname, "wb");
+				if (f) { fwrite(expected, 1, leafbytes, f); fclose(f); }
+				snprintf(fname, sizeof(fname), "post_verify_cluster_%d.bin", ci);
+				f = fopen(fname, "wb");
+				if (f) { fwrite(verify, 1, leafbytes, f); fclose(f); }
+				// Dump compressed block: we don't know its length directly; write until next cluster or vismap_p
+				int nextOfs = (ci + 1 < portalclusters) ? dvis->bitofs[ci + 1][DVIS_PVS] : (int)(vismap_p - vismap);
+				if (nextOfs <= ofs) nextOfs = (int)(vismap_p - vismap);
+				int clen = nextOfs - ofs;
+				if (clen > 0) {
+					snprintf(fname, sizeof(fname), "post_compressed_cluster_%d.bin", ci);
+					f = fopen(fname, "wb");
+					if (f) { fwrite(srcCompressed, 1, clen, f); fclose(f); }
+				}
+				anyMismatch = true;
+				// on continue pour collecter d'autres cas
+			}
+		}
+		if (anyMismatch) {
+			Warning("POST-WRITE VERIFY: mismatches detected, dumps written to working dir. Aborting write for investigation.\n");
+			// Optionnel : empêcher l'écriture du BSP pour inspection locale
+			// Error("Aborting due to PVS verification failures.");
+		}
+		else {
+			qprintf("POST-WRITE VERIFY OK: all clusters match uncompressedvis\n");
+		}
 
 		Msg ("writing %s\n", mapFile);
 		WriteBSPFile (mapFile);
