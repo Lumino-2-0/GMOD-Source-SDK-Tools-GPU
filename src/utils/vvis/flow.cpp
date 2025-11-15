@@ -123,217 +123,46 @@ typedef struct { int numpoints; float points[16][3]; } cl_winding_t;
 typedef struct { cl_plane_t plane; int leaf; float origin[3]; float radius; int winding_idx; } cl_portal_t;
 typedef struct { int first_portal; int num_portals; } cl_leaf_t;
 
-// Kernel principal : chaque work-item calcule portalvis pour un portail de base
-__kernel void recursive_leaf_flow(
-    __global const cl_portal_t* portals,
-    __global const cl_leaf_t* leafs,
-    __global const cl_winding_t* windings,
-    __global const uint* portalflood,
-    __global uint* portalvis,
-    __global int* changed,
+
+// Kernel de propagation de visibilité entre portails (une itération) NOUVEAU !
+__kernel void pvs_propagate(
+    __global const uint* portalflood,   // [numportals][portallongs]
+    __global uint* portalvis,           // [numportals][portallongs]
+    __global uint* frontier,            // [numportals][portallongs]
+    __global uint* next_frontier,       // [numportals][portallongs]
+    __global int* changed_flag,
     int numportals,
-    int portallongs )
-{
-    // runtime sanity check : portallongs doit tenir dans MAX_PORTAL_LONGS
-    if (portallongs > MAX_PORTAL_LONGS) {
-        // Bail out proprement si la taille demandee depasse la compile-time limit
-        return;
+    int portallongs
+) {
+    int p = get_global_id(0);
+    if (p >= numportals) return;
+
+    const uint* f_in = frontier + p * portallongs;
+    uint* f_out      = next_frontier + p * portallongs;
+    const uint* flood= portalflood + p * portallongs;
+    uint* vis        = portalvis  + p * portallongs;
+
+    int local_changed = 0;
+
+    // If this portal is in the frontier, propagate visibility
+    for (int j = 0; j < portallongs; ++j)
+    {
+        // new portals visible
+        uint newly = f_in[j] & ~vis[j];
+
+        if (newly != 0)
+            local_changed = 1;
+
+        // update visibility
+        vis[j] |= newly;
+
+        // prepare next frontier = newly & flood  (propagation rule)
+        f_out[j] = newly & flood[j];
     }
 
-    int portalIndex = get_global_id(0);
-    if (portalIndex >= numportals) return;  // verification de securite
-
-    const int bitOffset = portalIndex * portallongs;
-    __global const uint* baseFlood = portalflood + bitOffset;
-    __global uint* baseVis = portalvis + bitOffset;
-
-    // Initialiser le portalvis de base a 0 (securise si buffer non initialisé par l'hôte)
-    for (int k = 0; k < portallongs; ++k) {
-        baseVis[k] = 0u;
-    }
-
-    // Initialisation du premier niveau de pile (portail de base)
-    int stack_top = 0;
-    int stack_leaf[MAX_STACK_DEPTH];
-    int stack_portalIdx[MAX_STACK_DEPTH];
-    int stack_portalListIdx[MAX_STACK_DEPTH];
-    uint stack_mightsee[MAX_STACK_DEPTH][MAX_PORTAL_LONGS];
-    cl_winding_t stack_sourceWind[MAX_STACK_DEPTH];
-    cl_winding_t stack_passWind[MAX_STACK_DEPTH];
-    cl_plane_t stack_portalPlane[MAX_STACK_DEPTH];
-
-    stack_leaf[0] = portals[portalIndex].leaf;
-    stack_portalIdx[0] = portalIndex;
-    stack_portalListIdx[0] = 0;
-    stack_portalPlane[0] = portals[portalIndex].plane;
-    // winding complet du portail de base comme source initiale
-    stack_sourceWind[0] = windings[portals[portalIndex].winding_idx];
-    stack_passWind[0].numpoints = 0; // pas de pass defini au niveau 0
-    for (int j = 0; j < portallongs; ++j) {
-        stack_mightsee[0][j] = baseFlood[j];
-    }
-
-    // Parcours en profondeur iteratif
-    while (stack_top >= 0) {
-        int curLeaf = stack_leaf[stack_top];
-        int portalListIndex = stack_portalListIdx[stack_top];
-
-        if (portalListIndex >= leafs[curLeaf].num_portals || stack_top >= MAX_STACK_DEPTH) {
-            // Aucun autre portail a explorer, on depile
-            stack_top--;
-            continue;
-        }
-
-        int p_index = leafs[curLeaf].first_portal + portalListIndex;
-        stack_portalListIdx[stack_top]++;  // on avancera au portail suivant
-
-        // eviter de repasser par le portail d'où l'on vient
-        if (p_index == stack_portalIdx[stack_top]) {
-            continue;
-        }
-
-        // Test de potentiel visuel via le bitmask courant
-        uint maskWord = stack_mightsee[stack_top][p_index >> 5];
-        uint maskBit  = 1u << (p_index & 31);
-        if (!(maskWord & maskBit)) {
-            continue; // non visible sous les contraintes actuelles
-        }
-
-        const cl_portal_t curPortal = portals[p_index];
-        __global const uint* testBits = portalflood + curPortal.winding_idx * portallongs;
-
-        // Calcul du nouveau bitmask d'intersection et des bits nouveaux
-        uint anyNew = 0u;
-        uint mightsee_next[MAX_PORTAL_LONGS];
-        for (int j = 0; j < portallongs; ++j) {
-            mightsee_next[j] = stack_mightsee[stack_top][j] & testBits[j];
-            uint undiscovered = mightsee_next[j] & ~baseVis[j];
-            anyNew |= undiscovered;
-        }
-        if (anyNew == 0u && (baseVis[p_index >> 5] & (1u << (p_index & 31)))) {
-            // Aucune nouvelle zone a decouvrir, ce portail etait deja visible
-            continue;
-        }
-
-        // Test geometrique simplifie (distance center)
-        float d = 0.0f;
-        for (int m = 0; m < 3; ++m) {
-            d += curPortal.origin[m] * stack_portalPlane[stack_top].normal[m];
-        }
-        d -= stack_portalPlane[stack_top].dist;
-        if (d < -curPortal.radius) {
-            // Portail entierement en dehors du volume de visibilite
-            continue;
-        }
-
-        // On ajoute le niveau suivant dans la pile
-        if (stack_top + 1 >= MAX_STACK_DEPTH) {
-            // Debordement de profondeur, on abandonne ce chemin
-            continue;
-        }
-        stack_top++;
-        stack_leaf[stack_top] = curPortal.leaf;
-        stack_portalIdx[stack_top] = p_index;
-        stack_portalListIdx[stack_top] = 0;
-        stack_portalPlane[stack_top] = curPortal.plane;
-
-        // Calcul du passWind pour le niveau suivant
-        if (d > curPortal.radius) {
-            // Portail totalement visible, pas de decoupe
-            stack_passWind[stack_top] = windings[curPortal.winding_idx];
-        } else {
-            // Intersecte le winding courant avec le plan du portail parent
-            cl_winding_t fullW = windings[curPortal.winding_idx];
-            cl_plane_t prevPlane = stack_portalPlane[stack_top - 1];
-            cl_winding_t chopped = {0};
-            int side[17];
-            float distPoint[17];
-            for (int i = 0; i < fullW.numpoints; ++i) {
-                float dot = fullW.points[i][0]*prevPlane.normal[0]
-                          + fullW.points[i][1]*prevPlane.normal[1]
-                          + fullW.points[i][2]*prevPlane.normal[2]
-                          - prevPlane.dist;
-                distPoint[i] = dot;
-                if (dot > 0.001f) side[i] = 1;
-                else if (dot < -0.001f) side[i] = -1;
-                else side[i] = 0;
-            }
-            // close loop safely
-            fullW.points[fullW.numpoints][0] = fullW.points[0][0];
-            fullW.points[fullW.numpoints][1] = fullW.points[0][1];
-            fullW.points[fullW.numpoints][2] = fullW.points[0][2];
-            distPoint[fullW.numpoints] = distPoint[0];
-            side[fullW.numpoints] = side[0];
-            chopped.numpoints = 0;
-            for (int i = 0; i < fullW.numpoints; ++i) {
-                int j = i+1;
-                if (side[i] >= 0) {
-                    for(int c=0; c<3; ++c)
-                        chopped.points[chopped.numpoints][c] = fullW.points[i][c];
-                    chopped.numpoints++;
-                }
-                if ((side[i] == 1 && side[j] == -1) || (side[i] == -1 && side[j] == 1)) {
-                    float t = distPoint[i] / (distPoint[i] - distPoint[j]);
-                    float inter[3];
-                    for(int c=0; c<3; ++c) {
-                        inter[c] = fullW.points[i][c] + t*(fullW.points[j][c] - fullW.points[i][c]);
-                        chopped.points[chopped.numpoints][c] = inter[c];
-                    }
-                    chopped.numpoints++;
-                }
-                if (chopped.numpoints >= 16) break; // garde-fou
-            }
-            stack_passWind[stack_top] = chopped;
-            if (chopped.numpoints == 0) {
-                // Portail completement coupe, on depile
-                stack_top--;
-                continue;
-            }
-        }
-
-        // Calcul du sourceWind par rapport au backplane du portail courant
-        cl_plane_t backplane;
-        backplane.normal[0] = -curPortal.plane.normal[0];
-        backplane.normal[1] = -curPortal.plane.normal[1];
-        backplane.normal[2] = -curPortal.plane.normal[2];
-        backplane.dist = -curPortal.plane.dist;
-        float d2 = 0.0f;
-        const cl_portal_t basePortal = portals[portalIndex];
-        for (int m = 0; m < 3; ++m) {
-            d2 += basePortal.origin[m] * curPortal.plane.normal[m];
-        }
-        d2 -= curPortal.plane.dist;
-        if (d2 < -basePortal.radius || d2 > basePortal.radius) {
-            // La source passe entierement ou rien ne reste, on conserve la source precedente
-            stack_sourceWind[stack_top] = stack_sourceWind[stack_top-1];
-        } else {
-            // Decoupe du winding source precedent par le backplane
-            cl_winding_t prevSource = stack_sourceWind[stack_top-1];
-            cl_winding_t choppedSrc = {0};
-            // (Procedure de decoupe similaire a ci-dessus)
-            // ... minimal placeholder pour eviter plantage si incomplet
-            choppedSrc = prevSource; // fallback simple
-            stack_sourceWind[stack_top] = choppedSrc;
-            if (choppedSrc.numpoints == 0) {
-                // Plus de source visible, on depile
-                stack_top--;
-                continue;
-            }
-        }
-
-        // Clip 1 : si premiere transition (pas de pass au niveau precedent)
-        if (stack_passWind[stack_top-1].numpoints == 0) {
-            baseVis[p_index >> 5] |= (1u << (p_index & 31));
-            continue;
-        }
-
-        // Clip 2 : affiner avec ClipToSeparators (ici implemente par logique bitmask)
-        // Appliquer le pass courant en termes de sourceWind pour la prochaine iteration
-        // (on combine sourceWind, passWind, et separators pour obtenir mightsee_next)
-        baseVis[p_index >> 5] |= (1u << (p_index & 31));
-    } // fin du while (pile non vide)
-}
-)CL";
+    if (local_changed)
+        *changed_flag = 1;
+} )CL";
 
 // Gestionnaire OpenCL (singleton)
 OpenCLManager g_clManager;
@@ -343,7 +172,7 @@ OpenCLManager g_clManager;
 // Initialisation OpenCL
 void OpenCLManager::init_once() {
 	TRACE_FN();
-	TRACE_MSG("OpenCLManager::init_once() start");
+	TRACE_MSG("OpenCLManager:: starting ! ");
 	std::lock_guard<std::mutex> lock(init_mutex);
 	if (ok) return;
 
@@ -412,10 +241,10 @@ void OpenCLManager::init_once() {
 	CL_CHECK_ERR(err, "clBuildProgram");
 
 	// 4. Creer le kernel
-	floodfill_kernel = clCreateKernel(program, "recursive_leaf_flow", &err);
-	CL_CHECK_ERR(err, "clCreateKernel recursive_leaf_flow");
+	floodfill_kernel = clCreateKernel(program, "pvs_propagate", &err);
+	CL_CHECK_ERR(err, "clCreateKernel pvs_propagate");
 	if (err != CL_SUCCESS) {
-		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable, fallback CPU.\n";
+		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable (pvs_propagate), fallback CPU.\n";
 		ok = false;
 		return;
 	}
@@ -438,177 +267,98 @@ void OpenCLManager::cleanup() {
 void MassiveFloodFillGPU()
 {
 	TRACE_FN();
+
 	g_clManager.init_once();
 	assert(g_clManager.ok && "OpenCL non initialisé !");
-	int numportals = g_numportals * 2;
-	int portallongs = ::portallongs;
-	size_t totalSize = (size_t)numportals * portallongs;
 
-	TRACE_MSG("MassiveFloodFillGPU start: numportals=%d portallongs=%d totalSize=%zu", numportals, portallongs, totalSize);
+	const int numportals = g_numportals * 2;
+	const int portallongs = ::portallongs;
+	const size_t totalWords = (size_t)numportals * portallongs;
 
-	// 1) Remplir les tableaux CPU à partir des structures actuelles
-	std::vector<cl_portal_t> portals_cl(numportals);
-	for (int i = 0; i < numportals; ++i) {
-		portal_t* p = &portals[i];
-		portals_cl[i].plane.normal[0] = p->plane.normal[0];
-		portals_cl[i].plane.normal[1] = p->plane.normal[1];
-		portals_cl[i].plane.normal[2] = p->plane.normal[2];
-		portals_cl[i].plane.dist = p->plane.dist;
-		portals_cl[i].leaf = p->leaf;
-		portals_cl[i].origin[0] = p->origin[0];
-		portals_cl[i].origin[1] = p->origin[1];
-		portals_cl[i].origin[2] = p->origin[2];
-		portals_cl[i].radius = p->radius;
-		portals_cl[i].winding_idx = i;
-	}
-	std::vector<cl_leaf_t> leafs_cl(portalclusters);
-	for (int i = 0; i < portalclusters; ++i) {
-		int count = leafs[i].portals.Count();
-		leafs_cl[i].first_portal = (count > 0) ? (leafs[i].portals[0] - portals) : 0;
-		leafs_cl[i].num_portals = count;
-	}
-	std::vector<cl_winding_t> windings_cl(numportals);
-	for (int i = 0; i < numportals; ++i) {
-		winding_t* w = portals[i].winding;
-		windings_cl[i].numpoints = w->numpoints;
-		for (int j = 0; j < w->numpoints; ++j) {
-			windings_cl[i].points[j][0] = w->points[j][0];
-			windings_cl[i].points[j][1] = w->points[j][1];
-			windings_cl[i].points[j][2] = w->points[j][2];
-		}
-	}
+	// ============================================================
+	// Build flat arrays
+	// ============================================================
+	std::vector<uint> portalflood_flat(totalWords);
+	std::vector<uint> portalvis_flat(totalWords, 0);
+	std::vector<uint> frontier_flat(totalWords);
+	std::vector<uint> next_frontier_flat(totalWords, 0);
 
-	// 2) Préparer les bitmasks portalflood (initial) et portalvis (initialement 0)
-	std::vector<unsigned int> portalflood_flat(totalSize);
-	std::vector<unsigned int> portalvis_flat(totalSize, 0u);
-	for (int i = 0; i < numportals; ++i) {
-		unsigned int* src = (unsigned int*)portals[i].portalflood;
-		for (int j = 0; j < portallongs; ++j) {
-			portalflood_flat[i * portallongs + j] = src[j];
-		}
-	}
-
-	// 3) Créer et initialiser les buffers OpenCL (avec checks d'erreur)
-	cl_int err = CL_SUCCESS;
-	cl_mem d_portals = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_portal_t) * numportals, portals_cl.data(), &err);
-	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_portals"); goto cleanup_and_return; }
-	CL_CHECK_ERR(err, "clCreateBuffer d_portals");
-
-	cl_mem d_leafs = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_leaf_t) * portalclusters, leafs_cl.data(), &err);
-	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_leafs"); goto cleanup_and_return; }
-	CL_CHECK_ERR(err, "clCreateBuffer d_leafs");
-
-	cl_mem d_windings = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_winding_t) * numportals, windings_cl.data(), &err);
-	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_windings"); goto cleanup_and_return; }
-	CL_CHECK_ERR(err, "clCreateBuffer d_windings");
-
-	cl_mem d_portalflood = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(unsigned int) * totalSize, portalflood_flat.data(), &err);
-	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_portalflood"); goto cleanup_and_return; }
-	CL_CHECK_ERR(err, "clCreateBuffer d_portalflood");
-
-	cl_mem d_portalvis = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_uint) * portalvis_flat.size(), portalvis_flat.data(), &err);
-	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_portalvis"); goto cleanup_and_return; }
-	CL_CHECK_ERR(err, "clCreateBuffer d_portalvis");
-
-	// Debug self-test (déjà en place dans ton code)...
+	for (int i = 0; i < numportals; ++i)
 	{
-		cl_uint pattern = 0xDEADBEEF;
-		err = clEnqueueFillBuffer(g_clManager.queue, d_portalvis, &pattern, sizeof(pattern),
-			0, sizeof(cl_uint) * portalvis_flat.size(), 0, nullptr, nullptr);
-		CL_CHECK_ERR(err, "clEnqueueFillBuffer d_portalvis");
-		if (err == CL_SUCCESS) {
-			clFinish(g_clManager.queue);
-			std::vector<cl_uint> testRead(std::min<size_t>(portalvis_flat.size(), 8));
-			err = clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
-				sizeof(cl_uint) * testRead.size(), testRead.data(), 0, nullptr, nullptr);
-			CL_CHECK_ERR(err, "clEnqueueReadBuffer self-test");
-			if (err == CL_SUCCESS) {
-				bool ok = false;
-				for (size_t ii = 0; ii < testRead.size(); ++ii) {
-					if (testRead[ii] == pattern) { ok = true; break; }
-				}
-				TracePrint("[SELF-TEST] %s", ok ? "OK" : "FAILED");
-			}
-			std::fill(portalvis_flat.begin(), portalvis_flat.end(), 0u);
-			err = clEnqueueWriteBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0,
-				sizeof(cl_uint) * portalvis_flat.size(), portalvis_flat.data(), 0, nullptr, nullptr);
-			CL_CHECK_ERR(err, "clEnqueueWriteBuffer re-zero d_portalvis");
+		uint* src = (uint*)portals[i].portalflood;
+		for (int j = 0; j < portallongs; ++j)
+		{
+			portalflood_flat[i * portallongs + j] = src[j];
+			frontier_flat[i * portallongs + j] = src[j];   // initial frontier = flood
 		}
 	}
 
-	cl_mem d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE,
-		sizeof(int), nullptr, &err);
-	if (err != CL_SUCCESS) { CL_CHECK_ERR(err, "clCreateBuffer d_changed"); goto cleanup_and_return; }
-	CL_CHECK_ERR(err, "clCreateBuffer d_changed");
+	// ============================================================
+	// OpenCL buffers
+	// ============================================================
+	cl_int err = CL_SUCCESS;
 
-	// 4) Définir les arguments du kernel
+	cl_mem d_portalflood = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(uint) * totalWords, portalflood_flat.data(), &err);
+	cl_mem d_portalvis = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(uint) * totalWords, portalvis_flat.data(), &err);
+	cl_mem d_frontier = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(uint) * totalWords, frontier_flat.data(), &err);
+	cl_mem d_next_frontier = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(uint) * totalWords, next_frontier_flat.data(), &err);
+	cl_mem d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE, sizeof(int), nullptr, &err);
+
+	// ============================================================
+	// Kernel handles
+	// ============================================================
 	cl_kernel kernel = g_clManager.floodfill_kernel;
-	err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portals); CL_CHECK_ERR(err, "clSetKernelArg 0"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_leafs); CL_CHECK_ERR(err, "clSetKernelArg 1"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_windings); CL_CHECK_ERR(err, "clSetKernelArg 2"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &d_portalflood); CL_CHECK_ERR(err, "clSetKernelArg 3"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalvis); CL_CHECK_ERR(err, "clSetKernelArg 4"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_changed); CL_CHECK_ERR(err, "clSetKernelArg 5"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 6, sizeof(int), &numportals); CL_CHECK_ERR(err, "clSetKernelArg 6"); if (err != CL_SUCCESS) goto cleanup_and_return;
-	err = clSetKernelArg(kernel, 7, sizeof(int), &portallongs); CL_CHECK_ERR(err, "clSetKernelArg 7"); if (err != CL_SUCCESS) goto cleanup_and_return;
 
-	// 5) Lancer le kernel
-	size_t globalSize = (size_t)numportals;
-	TRACE_MSG("Enqueue kernel globalSize=%zu", globalSize);
-	err = clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &globalSize, nullptr, 0, nullptr, nullptr);
-	CL_CHECK_ERR(err, "clEnqueueNDRangeKernel");
-	if (err != CL_SUCCESS) { TracePrint("[OpenCL] clEnqueueNDRangeKernel failed"); goto cleanup_and_return; }
-	clFinish(g_clManager.queue);
-	TRACE_MSG("Kernel finished");
+	size_t globalSize = numportals;
 
-	// 6) Lire les résultats depuis le GPU
-	err = clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(cl_uint) * portalvis_flat.size(), portalvis_flat.data(), 0, NULL, NULL);
-	CL_CHECK_ERR(err, "clEnqueueReadBuffer d_portalvis");
-	if (err != CL_SUCCESS) { TracePrint("[OpenCL] clEnqueueReadBuffer failed"); goto cleanup_and_return; }
+	// ============================================================
+	// BFS PROPAGATION (CPU loop driving GPU)
+	// ============================================================
+	int changed = 1;
+	while (changed)
+	{
+		changed = 0;
+		clEnqueueWriteBuffer(g_clManager.queue, d_changed, CL_TRUE, 0, sizeof(int), &changed, 0, nullptr, nullptr);
 
-	// DEBUG: afficher quelques valeurs lues
-	TRACE_MSG("portalvis_flat[0..3] = %08X %08X %08X %08X",
-		portalvis_flat.size() > 0 ? portalvis_flat[0] : 0,
-		portalvis_flat.size() > 1 ? portalvis_flat[1] : 0,
-		portalvis_flat.size() > 2 ? portalvis_flat[2] : 0,
-		portalvis_flat.size() > 3 ? portalvis_flat[3] : 0);
+		// Set kernel args
+		clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portalflood);
+		clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_portalvis);
+		clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_frontier);
+		clSetKernelArg(kernel, 3, sizeof(cl_mem), &d_next_frontier);
+		clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_changed);
+		clSetKernelArg(kernel, 5, sizeof(int), &numportals);
+		clSetKernelArg(kernel, 6, sizeof(int), &portallongs);
 
-	// 7) Copier le résultat dans portals[i].portalvis et marquer status DONE
-	int marked = 0;
-	for (int i = 0; i < numportals; ++i) {
-		portal_t* p = &portals[i];
-		// ensure portalvis exists
-		if (!p->portalvis) {
-			p->portalvis = (byte*)malloc(portalbytes);
-			memset(p->portalvis, 0, portalbytes);
-		}
-		// copy words
-		unsigned int* dst = (unsigned int*)p->portalvis;
-		for (int j = 0; j < portallongs; ++j) {
-			dst[j] = portalvis_flat[i * portallongs + j];
-		}
-		// update counts and status
-		p->nummightsee = CountBits(p->portalvis, g_numportals * 2);
-		p->status = stat_done;
-		++marked;
+		// Launch
+		err = clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &globalSize, nullptr, 0, nullptr, nullptr);
+		clFinish(g_clManager.queue);
+
+		// Read "changed"
+		clEnqueueReadBuffer(g_clManager.queue, d_changed, CL_TRUE, 0, sizeof(int), &changed, 0, nullptr, nullptr);
+
+		// swap frontier buffers
+		std::swap(d_frontier, d_next_frontier);
+
+		// clear next frontier
+		cl_uint zero = 0;
+		clEnqueueFillBuffer(g_clManager.queue, d_next_frontier, &zero, sizeof(uint), 0, sizeof(uint) * totalWords, 0, nullptr, nullptr);
 	}
-	TRACE_MSG("MassiveFloodFillGPU: applied results to %d portals", marked);
 
-cleanup_and_return:
-	// release
-	if (d_portals) clReleaseMemObject(d_portals);
-	if (d_leafs) clReleaseMemObject(d_leafs);
-	if (d_windings) clReleaseMemObject(d_windings);
-	if (d_portalflood) clReleaseMemObject(d_portalflood);
-	if (d_portalvis) clReleaseMemObject(d_portalvis);
-	if (d_changed) clReleaseMemObject(d_changed);
+	// ============================================================
+	// Copy back final GPU result
+	// ============================================================
+	clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(uint) * totalWords, portalvis_flat.data(), 0, nullptr, nullptr);
 
-	TRACE_MSG("EXIT MassiveFloodFillGPU");
+	// Apply result to CPU portal structures
+	for (int i = 0; i < numportals; ++i)
+	{
+		portal_t* p = &portals[i];
+		memcpy(p->portalvis, portalvis_flat.data() + i * portallongs, portalbytes);
+		p->nummightsee = CountBits((byte*)p->portalvis, g_numportals * 2);
+		p->status = stat_done;
+	}
+
+	TRACE_MSG("GPU PVS propagation completed.");
 }
 
 void GPU_CPU_SampleCompare()
@@ -684,8 +434,8 @@ void GPU_CPU_SampleCompare()
 		// Sauvegarder une copie GPU avant d'appeler PortalFlow (PortalFlow peut écrire p->portalvis)
 		std::vector<uint32_t> gpu_before = gpu_bits;
 
-		// Calcul CPU local pour ce portail (appelant PortalFlow)
-		PortalFlow(0, sortedIndex);
+		// Calcul CPU local pour ce portail (appelant PortalFlow_CPU)
+		PortalFlow_CPU(0, sortedIndex);
 
 		// Lire CPU bits (après PortalFlow)
 		std::vector<uint32_t> cpu_bits(portallongs);
