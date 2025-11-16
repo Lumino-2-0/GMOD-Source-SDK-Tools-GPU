@@ -29,6 +29,114 @@ static std::mutex g_trace_mutex;
 static std::ofstream g_trace_file;
 static std::atomic<bool> g_trace_inited{ false };
 
+// ========= GPU PRUNE TUNING =========
+
+int g_gpuPreset = 2;
+
+
+// actual parameters (remplis automatiquement selon preset)
+float prune_min_radius = 8.0f;
+float prune_backface_dot = -0.1f;
+float prune_angle_dot = 0.25f;
+float prune_convex_dot = 0.0f;
+float prune_frustum_dot = -0.05f;
+
+// Backface culling strict
+static const float DOT_BACKFACE = 0.0f;          // cos(90°)
+
+// Angle culling moderately strict
+static const float DOT_ANGLE = -0.25f;           // cos(105°)
+
+// Multi-wall convexity culling
+static const float DOT_CONVEXITY = -0.15f;       // cos(98°)
+
+// Tiny portal removal
+static const float PORTAL_MIN_RADIUS = 12.0f;
+
+// Portal frustum limits (universal)
+static const float PORTAL_FRUSTUM_DOT_SIDE = -0.35f; // cos(110°)
+static const float PORTAL_FRUSTUM_DOT_UP = -0.45f; // cos(117°)
+
+// cluster fusion distance
+static const float CLUSTER_MERGE_DIST = 64.0f;
+
+static void RunTinyPortalPrune(int numportals, int portallongs, float minRadius)
+{
+	cl_kernel K = g_clManager.tiny_kernel;
+
+	// param #4 = minRadius
+	clSetKernelArg(K, 4, sizeof(float), &minRadius);
+
+	size_t global = (size_t)numportals;
+	cl_int err = clEnqueueNDRangeKernel(
+		g_clManager.queue, K, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+
+	if (err != CL_SUCCESS)
+		Msg("[GPU] RunTinyPortalPrune failed (%d)\n", err);
+	clFinish(g_clManager.queue);
+}
+
+static void RunBackfacePrune(int numportals, int portallongs, float dotMin)
+{
+	cl_kernel K = g_clManager.backface_kernel;
+
+	clSetKernelArg(K, 5, sizeof(float), &dotMin);
+
+	size_t global = (size_t)numportals;
+	cl_int err = clEnqueueNDRangeKernel(
+		g_clManager.queue, K, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+
+	if (err != CL_SUCCESS)
+		Msg("[GPU] RunBackfacePrune failed (%d)\n", err);
+	clFinish(g_clManager.queue);
+}
+
+static void RunAnglePrune(int numportals, int portallongs, float dotMin)
+{
+	cl_kernel K = g_clManager.angle_kernel;
+
+	clSetKernelArg(K, 4, sizeof(float), &dotMin);
+
+	size_t global = (size_t)numportals;
+	cl_int err = clEnqueueNDRangeKernel(
+		g_clManager.queue, K, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+
+	if (err != CL_SUCCESS)
+		Msg("[GPU] RunAnglePrune failed (%d)\n", err);
+	clFinish(g_clManager.queue);
+}
+
+static void RunConvexityPrune(int numportals, int portallongs, float dotMin)
+{
+	cl_kernel K = g_clManager.convexity_kernel;
+
+	clSetKernelArg(K, 4, sizeof(float), &dotMin);
+
+	size_t global = (size_t)numportals;
+	cl_int err = clEnqueueNDRangeKernel(
+		g_clManager.queue, K, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+
+	if (err != CL_SUCCESS)
+		Msg("[GPU] RunConvexityPrune failed (%d)\n", err);
+	clFinish(g_clManager.queue);
+}
+
+static void RunFrustumPrune(int numportals, int portallongs, float dotMin)
+{
+	cl_kernel K = g_clManager.frustum_kernel;
+
+	clSetKernelArg(K, 5, sizeof(float), &dotMin);
+
+	size_t global = (size_t)numportals;
+	cl_int err = clEnqueueNDRangeKernel(
+		g_clManager.queue, K, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+
+	if (err != CL_SUCCESS)
+		Msg("[GPU] RunFrustumPrune failed (%d)\n", err);
+	clFinish(g_clManager.queue);
+}
+
+
 inline void InitTrace()
 {
 	bool expected = false;
@@ -123,6 +231,195 @@ typedef struct { int numpoints; float points[16][3]; } cl_winding_t;
 typedef struct { cl_plane_t plane; int leaf; float origin[3]; float radius; int winding_idx; } cl_portal_t;
 typedef struct { int first_portal; int num_portals; } cl_leaf_t;
 
+// ===================================================
+// 1. TINY PORTAL PRUNE 
+// ===================================================
+__kernel void tiny_portal_prune(
+    __global uint* portalvis,
+    __global const float* portal_radius,
+    int numportals,
+    int portallongs,
+    float min_radius
+){
+    int i = get_global_id(0);
+    if (i >= numportals) return;
+
+    int base = i * portallongs;
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        if (portal_radius[j] < min_radius)
+        {
+            int w = j >> 5;
+            uint bit = 1u << (j & 31);
+            portalvis[base + w] &= ~bit;
+        }
+    }
+}
+
+
+
+// ===================================================
+// 2. BACKFACE PRUNE 
+// ===================================================
+__kernel void backface_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float dot_threshold
+){
+    int i = get_global_id(0);
+    if (i >= numportals) return;
+
+    int base = i * portallongs;
+
+    float3 Oi = portal_origin[i];
+    float3 Ni = portal_normal[i];
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        int w = j >> 5;
+        uint bit = 1u << (j & 31);
+        uint m = portalvis[base + w];
+        if (!(m & bit)) continue;
+
+        float3 Dir = portal_origin[j] - Oi;
+        float len = length(Dir);
+        if (len < 0.001f) { continue; }
+        Dir /= len;
+
+        float dotv = dot(Ni, Dir);
+
+        if (dotv < dot_threshold) 
+        {
+            portalvis[base + w] = m & ~bit;
+        }
+    }
+}
+
+
+
+// ===================================================
+// 3. ANGLE PRUNE 
+// ===================================================
+__kernel void angle_prune(
+    __global uint* portalvis,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float dot_threshold
+){
+    int i = get_global_id(0);
+    if (i >= numportals) return;
+
+    int base = i * portallongs;
+    float3 Ni = portal_normal[i];
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        int w = j >> 5;
+        uint bit = 1u << (j & 31);
+        uint m = portalvis[base + w];
+        if (!(m & bit)) continue;
+
+        float dotv = dot(Ni, portal_normal[j]);
+
+        if (dotv < dot_threshold) 
+            portalvis[base + w] = m & ~bit;
+    }
+}
+
+
+
+// ===================================================
+// 4. CONVEXITY PRUNE 
+//     (Double-wall occlusion heuristic)
+// ===================================================
+__kernel void convexity_prune(
+    __global uint* portalvis,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float dot_threshold
+){
+    int i = get_global_id(0);
+    if (i >= numportals) return;
+
+    int base_i = i * portallongs;
+    float3 Ni = portal_normal[i];
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        int wj = j >> 5;
+        uint bitj = 1u << (j & 31);
+        uint mj = portalvis[base_i + wj];
+        if (!(mj & bitj)) continue;
+
+        float3 Nj = portal_normal[j];
+
+        // Search any K that blocks I->J via convexity
+        for (int k = 0; k < numportals; ++k)
+        {
+            if (k == i || k == j) continue;
+
+            float3 Nk = portal_normal[k];
+
+            float d1 = dot(Ni, Nk);
+            float d2 = dot(Nk, Nj);
+
+            if (d1 < dot_threshold && d2 < dot_threshold)
+            {
+                portalvis[base_i + wj] = mj & ~bitj;
+                break;
+            }
+        }
+    }
+}
+
+
+
+
+// ===================================================
+// 5. FRUSTUM PRUNE 
+//     Simple directional frustum per-portal
+// ===================================================
+__kernel void frustum_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float dot_threshold
+){
+    int i = get_global_id(0);
+    if (i >= numportals) return;
+
+    int base_i = i * portallongs;
+
+    float3 Oi = portal_origin[i];
+    float3 Ni = portal_normal[i];
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        int wj = j >> 5;
+        uint bitj = 1u << (j & 31);
+        uint mj = portalvis[base_i + wj];
+        if (!(mj & bitj)) continue;
+
+        float3 Dir = portal_origin[j] - Oi;
+        float len = length(Dir);
+        if (len < 0.001f) continue;
+        Dir /= len;
+
+        float d = dot(Ni, Dir);
+        if (d < dot_threshold)
+            portalvis[base_i + wj] = mj & ~bitj;
+    }
+}
+
+
 
 // Kernel de propagation de visibilité entre portails (une itération) NOUVEAU !
 __kernel void pvs_propagate(
@@ -168,6 +465,9 @@ __kernel void pvs_propagate(
 OpenCLManager g_clManager;
 
 
+cl_mem d_portal_origin = nullptr;
+cl_mem d_portal_normal = nullptr;
+cl_mem d_portal_radius = nullptr;
 
 // Initialisation OpenCL
 void OpenCLManager::init_once() {
@@ -181,7 +481,7 @@ void OpenCLManager::init_once() {
 	err = clGetPlatformIDs(1, &platform, nullptr);
 	CL_CHECK_ERR(err, "clGetPlatformIDs");
 	if (err != CL_SUCCESS) {
-		std::cerr << "[OpenCL|GPU-Mod] Plateforme OpenCL introuvable, fallback CPU.\n";
+		std::cerr << "[OpenCL|GPU-Mod] Plateforme OpenCL introuvable, fallback CPU. (veuillez verifier que vous avez les pilotes OpenCL ou une carte graphique compatible :/ )\n";
 		ok = false;
 		return;
 	}
@@ -244,13 +544,31 @@ void OpenCLManager::init_once() {
 	floodfill_kernel = clCreateKernel(program, "pvs_propagate", &err);
 	CL_CHECK_ERR(err, "clCreateKernel pvs_propagate");
 	if (err != CL_SUCCESS) {
-		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable (pvs_propagate), fallback CPU.\n";
+		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable ou corrompu (pvs_propagate), fallback CPU.\n";
 		ok = false;
 		return;
 	}
 	ok = true;
 	TRACE_MSG("OpenCLManager::init_once() done, OK");
-	std::cout << "[OpenCL|GPU-Mod] Initialisation OpenCL reussie.\n";
+	
+	// =====================================================================
+// CREATE PRUNE KERNELS (NO ARGS SET HERE)
+// =====================================================================
+	g_clManager.tiny_kernel = clCreateKernel(program, "tiny_portal_prune", &err);
+	CL_CHECK_ERR(err, "create tiny_portal_prune");
+
+	g_clManager.backface_kernel = clCreateKernel(program, "backface_prune", &err);
+	CL_CHECK_ERR(err, "create backface_prune");
+
+	g_clManager.angle_kernel = clCreateKernel(program, "angle_prune", &err);
+	CL_CHECK_ERR(err, "create angle_prune");
+
+	g_clManager.convexity_kernel = clCreateKernel(program, "convexity_prune", &err);
+	CL_CHECK_ERR(err, "create convexity_prune");
+
+	g_clManager.frustum_kernel = clCreateKernel(program, "frustum_prune", &err);
+	CL_CHECK_ERR(err, "create frustum_prune");
+
 }
 
 void OpenCLManager::cleanup() {
@@ -263,12 +581,125 @@ void OpenCLManager::cleanup() {
 	std::cout << "[OpenCL|GPU-Mod] Nettoyage OpenCL termine.\n";
 }
 
+bool TinyPortal(const portal_t* P)
+{
+	return (P->radius < PORTAL_MIN_RADIUS);
+}
+
+bool Backface(const Vector& n, const Vector& dir)
+{
+	return (DotProduct(n, dir) < DOT_BACKFACE);
+}
+
+bool AngleCull(const Vector& A, const Vector& B)
+{
+	return (DotProduct(A, B) < DOT_ANGLE);
+}
+
+bool ConvexityCull(const Vector& A, const Vector& B)
+{
+	return (DotProduct(A, B) < DOT_CONVEXITY);
+}
+
+bool FrustumCull(const Vector& forward, const Vector& toPortal)
+{
+	float dot = DotProduct(forward, toPortal);
+	return (dot < PORTAL_FRUSTUM_DOT_SIDE);
+}
+
+
+static void GPU_SetPreset(int mode)
+{
+
+	switch (mode)
+	{
+		// 0 = soft : quasi identique VVIS original
+	case 0:
+		prune_min_radius = 2.0f;
+		prune_backface_dot = -0.8f;
+		prune_angle_dot = 0.05f;
+		prune_convex_dot = -0.5f;
+		prune_frustum_dot = -0.9f;
+		break;
+
+		// 1 = normal (nos valeurs par défaut)
+	case 1:
+		prune_min_radius = 8.0f;
+		prune_backface_dot = -0.1f;
+		prune_angle_dot = 0.25f;
+		prune_convex_dot = 0.0f;
+		prune_frustum_dot = -0.05f;
+		break;
+
+		// 2 = aggressive (pour map semi-ouvertes)
+	case 2:
+		prune_min_radius = 16.0f;
+		prune_backface_dot = 0.0f;
+		prune_angle_dot = 0.35f;
+		prune_convex_dot = 0.2f;
+		prune_frustum_dot = 0.1f;
+		break;
+
+		// 3 = ultra (pour maps géantes, villes, Kindercity ❤️)
+	case 3:
+		prune_min_radius = 24.0f;
+		prune_backface_dot = 0.15f;
+		prune_angle_dot = 0.45f;
+		prune_convex_dot = 0.35f;
+		prune_frustum_dot = 0.25f;
+		break;
+	}
+
+	Msg("[GPU-VIS] Preset %d loaded\n", mode);
+}
+
+
+
+static inline bool GeometricOcclusionCull(
+	const Vector& originA, const Vector& normalA,
+	const Vector& originB, const Vector& normalB,
+	float distAB, float dotAB,
+	int preset)
+{
+	// RULE 1 : Si les portails se tournent le dos (fort)
+	if (dotAB < -0.25f) return true;
+
+	// RULE 2 : Si distance trop grande selon preset
+	if (preset >= 2 && distAB > 2000.0f) return true;
+	if (preset >= 3 && distAB > 900.0f)  return true;
+
+	// RULE 3 : L’un est “derrière” le plan de l’autre
+	float dA = DotProduct(normalB, originA - originB);
+	float dB = DotProduct(normalA, originB - originA);
+
+	if (preset >= 1 && (dA < -20.0f || dB < -20.0f))
+		return true;
+
+	// RULE 4 : Angle trop fermé (porte intérieure)
+	if (preset >= 2)
+	{
+		if (dotAB < 0.10f) return true;
+	}
+
+	// RULE 5 : Ultra aggressive : coupe tout ce qui n’est pas quasi-aligné
+	if (preset >= 3)
+	{
+		if (dotAB < 0.35f) return true;
+		if (fabs(dA) > 60.0f || fabs(dB) > 60.0f) return true;
+	}
+
+	return false;
+}
+
 // Flood fill global sur GPU avec convergence
 void MassiveFloodFillGPU()
 {
 	TRACE_FN();
 
-	g_clManager.init_once();
+	// choose preset
+
+	GPU_SetPreset(g_gpuPreset); // g_gpuPreset = défini via l'argument -PresetGPU
+
 	assert(g_clManager.ok && "OpenCL non initialisé !");
 
 	const int numportals = g_numportals * 2;
@@ -303,6 +734,73 @@ void MassiveFloodFillGPU()
 	cl_mem d_frontier = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(uint) * totalWords, frontier_flat.data(), &err);
 	cl_mem d_next_frontier = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(uint) * totalWords, next_frontier_flat.data(), &err);
 	cl_mem d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE, sizeof(int), nullptr, &err);
+
+	// PREPARE BUFFERS FOR PRUNE KERNELS
+	std::vector<cl_float3> portal_origin(numportals);
+	std::vector<cl_float3> portal_normal(numportals);
+	std::vector<float>     portal_radius(numportals);
+
+	for (int i = 0; i < numportals; ++i)
+	{
+		portal_t* P = &portals[i];
+
+		portal_origin[i].x = (float)P->origin[0];
+		portal_origin[i].y = (float)P->origin[1];
+		portal_origin[i].z = (float)P->origin[2];
+
+		portal_normal[i].x = (float)P->plane.normal[0];
+		portal_normal[i].y = (float)P->plane.normal[1];
+		portal_normal[i].z = (float)P->plane.normal[2];
+
+		portal_radius[i] = P->radius;
+	}
+
+	g_clManager.buf_portal_origin = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(cl_float3) * numportals, portal_origin.data(), &err);
+	g_clManager.buf_portal_normal = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(cl_float3) * numportals, portal_normal.data(), &err);
+	g_clManager.buf_portal_radius = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(float) * numportals, portal_radius.data(), &err);
+
+	g_clManager.buf_portalvis = d_portalvis; // IMPORTANT
+
+
+
+	// ============================
+	// BIND PRUNE KERNEL ARGS HERE
+	// ============================
+
+	// TINY PORTAL PRUNE
+	clSetKernelArg(g_clManager.tiny_kernel, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(g_clManager.tiny_kernel, 1, sizeof(cl_mem), &g_clManager.buf_portal_radius);
+	clSetKernelArg(g_clManager.tiny_kernel, 2, sizeof(int), &numportals);
+	clSetKernelArg(g_clManager.tiny_kernel, 3, sizeof(int), &portallongs);
+
+	// BACKFACE PRUNE
+	clSetKernelArg(g_clManager.backface_kernel, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(g_clManager.backface_kernel, 1, sizeof(cl_mem), &g_clManager.buf_portal_origin);
+	clSetKernelArg(g_clManager.backface_kernel, 2, sizeof(cl_mem), &g_clManager.buf_portal_normal);
+	clSetKernelArg(g_clManager.backface_kernel, 3, sizeof(int), &numportals);
+	clSetKernelArg(g_clManager.backface_kernel, 4, sizeof(int), &portallongs);
+
+	// ANGLE PRUNE
+	clSetKernelArg(g_clManager.angle_kernel, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(g_clManager.angle_kernel, 1, sizeof(cl_mem), &g_clManager.buf_portal_normal);
+	clSetKernelArg(g_clManager.angle_kernel, 2, sizeof(int), &numportals);
+	clSetKernelArg(g_clManager.angle_kernel, 3, sizeof(int), &portallongs);
+
+	// CONVEXITY PRUNE
+	clSetKernelArg(g_clManager.convexity_kernel, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(g_clManager.convexity_kernel, 1, sizeof(cl_mem), &g_clManager.buf_portal_normal);
+	clSetKernelArg(g_clManager.convexity_kernel, 2, sizeof(int), &numportals);
+	clSetKernelArg(g_clManager.convexity_kernel, 3, sizeof(int), &portallongs);
+
+	// FRUSTUM PRUNE
+	clSetKernelArg(g_clManager.frustum_kernel, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(g_clManager.frustum_kernel, 1, sizeof(cl_mem), &g_clManager.buf_portal_origin);
+	clSetKernelArg(g_clManager.frustum_kernel, 2, sizeof(cl_mem), &g_clManager.buf_portal_normal);
+	clSetKernelArg(g_clManager.frustum_kernel, 3, sizeof(int), &numportals);
+	clSetKernelArg(g_clManager.frustum_kernel, 4, sizeof(int), &portallongs);
 
 	// ============================================================
 	// Kernel handles
@@ -339,6 +837,8 @@ void MassiveFloodFillGPU()
 		// swap frontier buffers
 		std::swap(d_frontier, d_next_frontier);
 
+		clFinish(g_clManager.queue);
+
 		// clear next frontier
 		cl_uint zero = 0;
 		clEnqueueFillBuffer(g_clManager.queue, d_next_frontier, &zero, sizeof(uint), 0, sizeof(uint) * totalWords, 0, nullptr, nullptr);
@@ -347,7 +847,106 @@ void MassiveFloodFillGPU()
 	// ============================================================
 	// Copy back final GPU result
 	// ============================================================
-	clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(uint) * totalWords, portalvis_flat.data(), 0, nullptr, nullptr);
+	clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(uint)* totalWords, portalvis_flat.data(), 0, nullptr, nullptr);
+
+	// ============================================================
+	// GPU PRUNE PHASE (toujours exécuté)
+	// ============================================================
+	RunTinyPortalPrune(numportals, portallongs, prune_min_radius);
+	RunBackfacePrune(numportals, portallongs, prune_backface_dot);
+	RunAnglePrune(numportals, portallongs, prune_angle_dot);
+	RunConvexityPrune(numportals, portallongs, prune_convex_dot);
+	RunFrustumPrune(numportals, portallongs, prune_frustum_dot);
+
+
+	if (g_gpuPreset >= 1)  // activation pour preset >=1
+	{
+		TRACE_MSG("GPU-PVS: Geometric Occlusion CPU-Pass...");
+
+		for (int i = 0; i < numportals; ++i)
+		{
+			portal_t* A = &portals[i];
+			Vector Ao = A->origin;
+			Vector An = A->plane.normal;
+
+			uint* visA = portalvis_flat.data() + i * portallongs;
+
+			for (int j = 0; j < numportals; ++j)
+			{
+				if (i == j) continue;
+
+				uint* visword = visA + (j >> 5);
+				uint bit = 1u << (j & 31);
+				if (!(*visword & bit)) continue;
+
+				portal_t* B = &portals[j];
+				Vector Bo = B->origin;
+				Vector Bn = B->plane.normal;
+
+				Vector AB = Bo - Ao;
+				float distAB = VectorLength(AB);
+				float dotAB = DotProduct(An, (Bo - Ao).Normalized());
+
+				if (GeometricOcclusionCull(Ao, An, Bo, Bn, distAB, dotAB, g_gpuPreset))
+				{
+					*visword &= ~bit;
+				}
+			}
+		}
+
+		TRACE_MSG("Geometric Occlusion CPU-PASS DONE.");
+	}
+
+	// ============================================================
+	// CPU HARD PRUNE (désactivé pour preset >= 2)
+	// ============================================================
+	if (g_gpuPreset <= 1)
+	{
+		TRACE_MSG("Starting UNIVERSAL HARD-HP PVS PRUNE...");
+
+		for (int i = 0; i < numportals; ++i)
+		{
+			uint* vis_i = portalvis_flat.data() + i * portallongs;
+
+			for (int j = 0; j < numportals; ++j)
+			{
+				if (i == j) continue;
+
+				uint* vis_j = portalvis_flat.data() + j * portallongs;
+
+				// ... ici tu peux remettre tes règles CPU si tu veux
+			}
+		}
+
+		TRACE_MSG("UNIVERSAL HARD-HP PRUNE DONE.");
+	}
+	else
+	{
+		TRACE_MSG("Skipping HARD-HP PVS PRUNE for preset >= 2 (large maps)");
+	}
+
+
+	TRACE_MSG("Cluster merge pass...");
+
+	for (int i = 0; i < numportals; ++i)
+	{
+		portal_t* Pi = &portals[i];
+		uint* vis_i = portalvis_flat.data() + i * portallongs;
+
+		for (int j = 0; j < numportals; ++j)
+		{
+			if (i == j) continue;
+			portal_t* Pj = &portals[j];
+
+			if ((Pi->origin - Pj->origin).Length() < CLUSTER_MERGE_DIST)
+			{
+				uint* vis_j = portalvis_flat.data() + j * portallongs;
+				for (int w = 0; w < portallongs; ++w)
+					vis_i[w] |= vis_j[w];
+			}
+		}
+	}
+
 
 	// Apply result to CPU portal structures
 	for (int i = 0; i < numportals; ++i)
@@ -540,6 +1139,20 @@ void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& o
 	clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
 	clFinish(g_clManager.queue);
 	TRACE_MSG("Kernel finished");
+
+
+	// ============================
+	// GPU PRUNE PIPELINE
+	// ============================
+
+	RunTinyPortalPrune(numportals, portallongs, prune_min_radius);
+	RunBackfacePrune(numportals, portallongs, prune_backface_dot);
+	RunAnglePrune(numportals, portallongs, prune_angle_dot);
+	RunConvexityPrune(numportals, portallongs, prune_convex_dot);
+	RunFrustumPrune(numportals, portallongs, prune_frustum_dot);
+
+	clFinish(g_clManager.queue);
+	TRACE_MSG("PRUNE FINISHED");
 
 	clEnqueueReadBuffer(g_clManager.queue, d_counts, CL_TRUE, 0, sizeof(int) * numportals, out_counts.data(), 0, nullptr, nullptr);
 	if (portalvis_flat.size() >= 2) {
@@ -1294,7 +1907,8 @@ void BasePortalVis (int iThread, int portalnum)
 	memset (p->portalflood, 0, portalbytes);
 	
 	p->portalvis = (byte*)malloc (portalbytes);
-	memset (p->portalvis, 0, portalbytes);
+
+	memccpy(p->portalvis, p->portalflood, 0, portalbytes);
 	
 	//
 	// test the given portal against all of the portals in the map

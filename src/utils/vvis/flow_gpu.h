@@ -40,6 +40,20 @@ struct OpenCLManager {
     cl_program program = nullptr;
     cl_kernel floodfill_kernel = nullptr;
     cl_kernel countbits_kernel = nullptr;
+
+    // prune kernels
+    cl_kernel tiny_kernel = nullptr;
+    cl_kernel backface_kernel = nullptr;
+    cl_kernel angle_kernel = nullptr;
+    cl_kernel convexity_kernel = nullptr;
+    cl_kernel frustum_kernel = nullptr;
+
+    // prune buffers
+    cl_mem buf_portal_origin = nullptr;
+    cl_mem buf_portal_normal = nullptr;
+    cl_mem buf_portal_radius = nullptr;
+    cl_mem buf_portalvis = nullptr;
+
     bool ok = false;
     std::mutex init_mutex;
     void log(const std::string& s) { std::cout << "[OpenCL|GPU-Mod] " << s << std::endl; }
@@ -49,7 +63,7 @@ struct OpenCLManager {
 
 };
 
-
+extern int g_gpuPreset;
 
 extern OpenCLManager g_clManager;
 

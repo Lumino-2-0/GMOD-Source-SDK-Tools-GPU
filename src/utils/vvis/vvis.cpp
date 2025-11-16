@@ -1022,7 +1022,21 @@ int ParseCommandLine( int argc, char **argv )
 		{
 			// Active les messages de debug GPU/OpenCL
 		}
+		else if (!stricmp(argv[i], "-PresetGPU"))
+		{
 
+			i++;
+			if (i < argc)
+			{
+				g_gpuPreset = atoi(argv[i]);
+				if (g_gpuPreset < 0 || g_gpuPreset > 3)
+					g_gpuPreset = 2; // défaut : Normal/Aggressive
+			}
+			else
+			{
+				g_gpuPreset = 2;
+			}
+		}
 		/*############################################ MOD OPEN CL/GPU ############################################*/
 
 		else if ( !Q_stricmp( argv[i], "-allowdebug" ) || !Q_stricmp( argv[i], "-steam" ) )
@@ -1101,9 +1115,15 @@ void PrintUsage( int argc, char **argv )
 		"  -FullMinidumps  : Write large minidumps on crash.\n"
 		"  -x360		   : Generate Xbox360 version of vsp\n"
 		"  -nox360		   : Disable generation Xbox360 version of vsp (default)\n"
-		"  -nogpu          : Forcer l'utilisation du fallback version CPU (Old).\n"
+		"  -nogpu          : Forcer l'utilisation du fallback version CPU (Old).\n\n"
+		"############################################################# GPU MOD OPTIONS ############################################################# \n\n"
 		"  -TryGPU		   : Permet de comparer les résultats GPU vs CPU pour verification (peut ralentir le processus de quelques secondes/minutes).\n"
 		"  -debug 		   : Active les messages de debug GPU/OpenCL.\n"
+		"  -PresetGPU      : Choisit l'agressivite de l'optimisation GPU.\n"
+		"       0 = Soft (quasi-identique VVIS original)\n"
+		"       1 = Normal\n"
+		"       2 = Aggressive (defaut)\n"
+		"       3 = Ultra (pour tres grandes maps ouvertes)\n"
 		"\n"
 #if 1 // Disabled for the initial SDK release with VMPI so we can get feedback from selected users.
 		);
@@ -1333,8 +1353,6 @@ int main (int argc, char **argv)
 {
 	SetConsoleOutputCP(CP_UTF8);
 	CommandLine()->CreateCmdLine( argc, argv );
-
-	Msg("[DEBUG] Debut du programme VVIS-GPU, init OpenCL...\n");
 
 	MathLib_Init( 2.2f, 2.2f, 0.0f, 1.0f, false, false, false, false );
 	InstallAllocationFunctions();

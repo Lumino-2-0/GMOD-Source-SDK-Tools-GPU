@@ -11,6 +11,8 @@ extern double g_VisRadius;
 extern bool g_bTryGPU;    // active l'échantillonnage CPU↔GPU (-TryGPU)
 extern bool g_bDebugMode; // active le tracing/logging (-debug)
 
+extern int g_gpuPreset;
+
 struct plane_t {
     Vector normal;
     float dist;
