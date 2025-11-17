@@ -20,6 +20,7 @@
 #include "loadcmdline.h"
 #include "byteswap.h"
 #include "flow_gpu.h"
+#include "lib_loader.h"
 
 int g_numportals;
 int portalclusters;
@@ -1022,6 +1023,10 @@ int ParseCommandLine( int argc, char **argv )
 		{
 			// Active les messages de debug GPU/OpenCL
 		}
+		else if (!Q_stricmp(argv[i], "-NoCheckLib"))
+		{
+			// Done on startup : main. Désactive la vérif de la presence dll filesystem_stdio dans son repertoire.
+		}
 		else if (!stricmp(argv[i], "-PresetGPU"))
 		{
 
@@ -1124,6 +1129,7 @@ void PrintUsage( int argc, char **argv )
 		"       1 = Normal\n"
 		"       2 = Aggressive (defaut)\n"
 		"       3 = Ultra (pour tres grandes maps ouvertes)\n"
+		"  -NoCheckLib    : Desactive la verification des bibliotheques fournis avec la version moddé (tier0; vstdlib;  filesystem_stdio) au demarrage (utile pour les tests de developpement).\n"
 		"\n"
 #if 1 // Disabled for the initial SDK release with VMPI so we can get feedback from selected users.
 		);
@@ -1349,8 +1355,23 @@ int RunVVis( int argc, char **argv )
 main
 ===========
 */
+
+extern void EnsureAllLibs(bool noCheck);
+
 int main (int argc, char **argv)
 {
+	if (!CheckRequiredDLLs())
+	{
+		printf("[FATAL] Missing essential DLLs. VVIS_GPU cannot start.\n");
+		return 1; // stop proprement
+	}
+
+	// Auto-extract filesystem_stdio.dll (unless NoCheckLib)
+	if (!CommandLine()->CheckParm("-NoCheckLib"))
+	{
+		EnsureFilesystemOnly(false);
+	}
+
 	SetConsoleOutputCP(CP_UTF8);
 	CommandLine()->CreateCmdLine( argc, argv );
 

@@ -231,6 +231,103 @@ typedef struct { int numpoints; float points[16][3]; } cl_winding_t;
 typedef struct { cl_plane_t plane; int leaf; float origin[3]; float radius; int winding_idx; } cl_portal_t;
 typedef struct { int first_portal; int num_portals; } cl_leaf_t;
 
+
+
+__kernel void distance_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    float maxDistSq,
+    int numportals,
+    int portallongs)
+{
+    int P = get_global_id(0);
+    if (P >= numportals) return;
+
+    float3 O = portal_origin[P];
+    uint* outmask = portalvis + (P * portallongs);
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        float3 Oj = portal_origin[j];
+        float dx = Oj.x - O.x;
+        float dy = Oj.y - O.y;
+        float dz = Oj.z - O.z;
+
+        float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 > maxDistSq)
+        {
+            int w = j >> 5;
+            int b = j & 31;
+            outmask[w] &= ~(1u << b);
+        }
+    }
+}
+
+
+__kernel void opposite_facing_prune(
+    __global uint* portalvis,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float dotLimit)
+{
+    int P = get_global_id(0);
+    if (P >= numportals) return;
+
+    float3 N = portal_normal[P];
+    uint* outmask = portalvis + P * portallongs;
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        float3 Nj = portal_normal[j];
+
+        float dotv = N.x*Nj.x + N.y*Nj.y + N.z*Nj.z;
+        if (dotv < dotLimit)
+        {
+            int w = j >> 5;
+            int b = j & 31;
+            outmask[w] &= ~(1u << b);
+        }
+    }
+}
+
+__kernel void sector_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float angleLimit)
+{
+    int P = get_global_id(0);
+    if (P >= numportals) return;
+
+    float3 O = portal_origin[P];
+    float3 N = portal_normal[P];
+
+    uint* outmask = portalvis + P * portallongs;
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        float3 Oj = portal_origin[j];
+        float3 dir = (float3)(Oj.x - O.x, Oj.y - O.y, Oj.z - O.z);
+
+        float len = sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z) + 1e-5f;
+        dir = dir / len;
+
+        float dotv = N.x*dir.x + N.y*dir.y + N.z*dir.z;
+
+        if (dotv < angleLimit)
+        {
+            int w = j >> 5;
+            int b = j & 31;
+            outmask[w] &= ~(1u << b);
+        }
+    }
+}
+
+
+
 // ===================================================
 // 1. TINY PORTAL PRUNE 
 // ===================================================
@@ -420,46 +517,157 @@ __kernel void frustum_prune(
 }
 
 
+__kernel void z_occlusion_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float zLimit)
+{
+    int P = get_global_id(0);
+    if (P >= numportals) return;
+
+    float3 O = portal_origin[P];
+    float3 N = portal_normal[P];
+
+    uint* outmask = portalvis + P * portallongs;
+
+    for (int j = 0; j < numportals; ++j)
+    {
+        float3 D = portal_origin[j] - O;
+        float d = dot(D, N); // profondeur dans l’axe du portail
+
+        if (d > zLimit)   // Trop profond = invisible
+        {
+            int w = j >> 5;
+            int b = j & 31;
+            outmask[w] &= ~(1u << b);
+        }
+    }
+}
+
+__kernel void solid_angle_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    __global const float* portal_radius,
+    int numportals,
+    int portallongs,
+    float minAngle)
+{
+    int P = get_global_id(0);
+    if (P >= numportals) return;
+
+    float3 O = portal_origin[P];
+    uint* outmask = portalvis + P*portallongs;
+
+    for (int j = 0; j < numportals; j++)
+    {
+        float3 D = portal_origin[j] - O;
+        float d = length(D) + 0.0001f;
+        float angle = portal_radius[j] / d;
+
+        if (angle < minAngle)
+        {
+            int w = j >> 5;
+            int b = j & 31;
+            outmask[w] &= ~(1u << b);
+        }
+    }
+}
+
+__kernel void pyramid_sector_prune(
+    __global uint* portalvis,
+    __global const float3* portal_origin,
+    __global const float3* portal_normal,
+    int numportals,
+    int portallongs,
+    float cosLimit)
+{
+    int P = get_global_id(0);
+    if (P >= numportals) return;
+
+    float3 O = portal_origin[P];
+    float3 N = portal_normal[P];
+    uint* outmask = portalvis + P * portallongs;
+
+    for (int j = 0; j < numportals; j++)
+    {
+        float3 D = normalize(portal_origin[j] - O);
+        float c = dot(N, D);
+
+        if (c < cosLimit)
+        {
+            int w = j >> 5;
+            int b = j & 31;
+            outmask[w] &= ~(1u << b);
+        }
+    }
+}
+
+
+
 
 // Kernel de propagation de visibilité entre portails (une itération) NOUVEAU !
-__kernel void pvs_propagate(
-    __global const uint* portalflood,   // [numportals][portallongs]
-    __global uint* portalvis,           // [numportals][portallongs]
-    __global uint* frontier,            // [numportals][portallongs]
-    __global uint* next_frontier,       // [numportals][portallongs]
-    __global int* changed_flag,
-    int numportals,
+__kernel void pvs_leaf_propagate(
+    __global const uint* portalflood,
+    __global const int* leaf_first,
+    __global const int* leaf_count,
+    __global const int* leaf_portals,
+    __global const int* portal_leaf,   // new
+    __global uint* visleaf,            // [leafclusters][leaflongs]
+    __global uint* next_visleaf,
+    __global int* changed,
+    int leafclusters,
+    int leaflongs,
     int portallongs
-) {
-    int p = get_global_id(0);
-    if (p >= numportals) return;
+){
+    int L = get_global_id(0);
+    if (L >= leafclusters) return;
 
-    const uint* f_in = frontier + p * portallongs;
-    uint* f_out      = next_frontier + p * portallongs;
-    const uint* flood= portalflood + p * portallongs;
-    uint* vis        = portalvis  + p * portallongs;
+    const uint* vis_in = visleaf + L*leaflongs;
+    uint* vis_out = next_visleaf + L*leaflongs;
+
+    int lf = leaf_first[L];
+    int lc = leaf_count[L];
 
     int local_changed = 0;
 
-    // If this portal is in the frontier, propagate visibility
-    for (int j = 0; j < portallongs; ++j)
-    {
-        // new portals visible
-        uint newly = f_in[j] & ~vis[j];
+    // Start from current leaf bits
+    for (int w = 0; w < leaflongs; ++w)
+        vis_out[w] = vis_in[w];
 
-        if (newly != 0)
-            local_changed = 1;
+    // For each portal in this leaf
+    for (int i = 0; i < lc; ++i) {
+        int P = leaf_portals[lf + i];
 
-        // update visibility
-        vis[j] |= newly;
+        // For each portal visible from this portal
+        for (int w = 0; w < portallongs; ++w) {
+            uint mask = portalflood[P * portallongs + w];
 
-        // prepare next frontier = newly & flood  (propagation rule)
-        f_out[j] = newly & flood[j];
+            if (!mask) continue;
+
+            // For each bit in mask
+            for (int b = 0; b < 32; ++b) {
+                if (!(mask & (1u << b))) continue;
+
+                int P2 = (w << 5) + b;
+                int L2 = portal_leaf[P2];
+                uint* dst = vis_out + (L2 >> 5);
+                uint bitmask = 1u << (L2 & 31);
+
+                if (!(*dst & bitmask)) {
+                    *dst |= bitmask;
+                    local_changed = 1;
+                }
+            }
+        }
     }
 
     if (local_changed)
-        *changed_flag = 1;
-} )CL";
+        *changed = 1;
+}
+)CL";
 
 // Gestionnaire OpenCL (singleton)
 OpenCLManager g_clManager;
@@ -541,19 +749,19 @@ void OpenCLManager::init_once() {
 	CL_CHECK_ERR(err, "clBuildProgram");
 
 	// 4. Creer le kernel
-	floodfill_kernel = clCreateKernel(program, "pvs_propagate", &err);
-	CL_CHECK_ERR(err, "clCreateKernel pvs_propagate");
+	floodfill_kernel = clCreateKernel(program, "pvs_leaf_propagate", &err);
+	CL_CHECK_ERR(err, "clCreateKernel pvs_leaf_propagate");
 	if (err != CL_SUCCESS) {
-		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable ou corrompu (pvs_propagate), fallback CPU.\n";
+		std::cerr << "[OpenCL|GPU-Mod] Kernel introuvable ou corrompu (pvs_leaf_propagate), fallback CPU.\n";
 		ok = false;
 		return;
 	}
 	ok = true;
 	TRACE_MSG("OpenCLManager::init_once() done, OK");
-	
+
 	// =====================================================================
-// CREATE PRUNE KERNELS (NO ARGS SET HERE)
-// =====================================================================
+	// CREATE PRUNE KERNELS (NO ARGS SET HERE)
+	// =====================================================================
 	g_clManager.tiny_kernel = clCreateKernel(program, "tiny_portal_prune", &err);
 	CL_CHECK_ERR(err, "create tiny_portal_prune");
 
@@ -568,6 +776,27 @@ void OpenCLManager::init_once() {
 
 	g_clManager.frustum_kernel = clCreateKernel(program, "frustum_prune", &err);
 	CL_CHECK_ERR(err, "create frustum_prune");
+
+	g_clManager.leaf_kernel = clCreateKernel(program, "pvs_leaf_propagate", &err);
+	CL_CHECK_ERR(err, "create pvs_leaf_propagate");
+
+	g_clManager.distance_prune_kernel = clCreateKernel(program, "distance_prune", &err);
+	CL_CHECK_ERR(err, "create distance_prune");
+
+	g_clManager.opposite_prune_kernel = clCreateKernel(program, "opposite_facing_prune", &err);
+	CL_CHECK_ERR(err, "create opposite_facing_prune");
+
+	g_clManager.sector_prune_kernel = clCreateKernel(program, "sector_prune", &err);
+	CL_CHECK_ERR(err, "create sector_prune");
+
+	g_clManager.z_occlusion_kernel = clCreateKernel(program, "z_occlusion_prune", &err);
+	CL_CHECK_ERR(err, "create z_occlusion_prune");
+
+	g_clManager.solid_angle_kernel = clCreateKernel(program, "solid_angle_prune", &err);
+	CL_CHECK_ERR(err, "create solid_angle_prune");
+
+	g_clManager.pyramid_sector_kernel = clCreateKernel(program, "pyramid_sector_prune", &err);
+	CL_CHECK_ERR(err, "create pyramid_sector_prune");
 
 }
 
@@ -691,6 +920,132 @@ static inline bool GeometricOcclusionCull(
 	return false;
 }
 
+
+void GPU_ZOcclusionPrune(cl_mem d_portalvis,
+	cl_mem d_portal_origin,
+	cl_mem d_portal_normal,
+	int numportals, int portallongs)
+{
+	float limit = 4096.0f;
+
+	cl_kernel k = g_clManager.z_occlusion_kernel;
+
+	clSetKernelArg(k, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(k, 1, sizeof(cl_mem), &d_portal_origin);
+	clSetKernelArg(k, 2, sizeof(cl_mem), &d_portal_normal);
+	clSetKernelArg(k, 3, sizeof(int), &numportals);
+	clSetKernelArg(k, 4, sizeof(int), &portallongs);
+	clSetKernelArg(k, 5, sizeof(float), &limit);
+
+	size_t global = numportals;
+	clEnqueueNDRangeKernel(g_clManager.queue, k, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+	clFinish(g_clManager.queue);
+}
+
+void GPU_SolidAnglePrune(cl_mem d_portalvis,
+	cl_mem d_portal_origin,
+	cl_mem d_portal_radius,
+	int numportals, int portallongs)
+{
+	float minA = 0.005f;
+
+	cl_kernel k = g_clManager.solid_angle_kernel;
+
+	clSetKernelArg(k, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(k, 1, sizeof(cl_mem), &d_portal_origin);
+	clSetKernelArg(k, 2, sizeof(cl_mem), &d_portal_radius);
+	clSetKernelArg(k, 3, sizeof(int), &numportals);
+	clSetKernelArg(k, 4, sizeof(int), &portallongs);
+	clSetKernelArg(k, 5, sizeof(float), &minA);
+
+	size_t global = numportals;
+	clEnqueueNDRangeKernel(g_clManager.queue, k, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+	clFinish(g_clManager.queue);
+}
+
+void GPU_PyramidSectorPrune(cl_mem d_portalvis,
+	cl_mem d_portal_origin,
+	cl_mem d_portal_normal,
+	int numportals, int portallongs)
+{
+	float cosLimit = 0.2f;  // 78°
+
+	cl_kernel k = g_clManager.pyramid_sector_kernel;
+
+	clSetKernelArg(k, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(k, 1, sizeof(cl_mem), &d_portal_origin);
+	clSetKernelArg(k, 2, sizeof(cl_mem), &d_portal_normal);
+	clSetKernelArg(k, 3, sizeof(int), &numportals);
+	clSetKernelArg(k, 4, sizeof(int), &portallongs);
+	clSetKernelArg(k, 5, sizeof(float), &cosLimit);
+
+	size_t global = numportals;
+	clEnqueueNDRangeKernel(g_clManager.queue, k, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+	clFinish(g_clManager.queue);
+}
+
+
+void GPU_DistancePrune(cl_mem d_portalvis, cl_mem d_portal_origin,
+	int numportals, int portallongs)
+{
+	float maxDist = 20000.0f; // règle à ajuster
+	float maxDistSq = maxDist * maxDist;
+
+	cl_kernel k = g_clManager.distance_prune_kernel;
+
+	clSetKernelArg(k, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(k, 1, sizeof(cl_mem), &d_portal_origin);
+	clSetKernelArg(k, 2, sizeof(float), &maxDistSq);
+	clSetKernelArg(k, 3, sizeof(int), &numportals);
+	clSetKernelArg(k, 4, sizeof(int), &portallongs);
+
+	size_t global = numportals;
+	clEnqueueNDRangeKernel(g_clManager.queue, k, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+	clFinish(g_clManager.queue);
+}
+
+
+void GPU_OppositeFacingPrune(cl_mem d_portalvis, cl_mem d_portal_normal,
+	int numportals, int portallongs)
+{
+	float dotLimit = -0.3f;  // portails opposés strictement
+
+	cl_kernel k = g_clManager.opposite_prune_kernel;
+
+	clSetKernelArg(k, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(k, 1, sizeof(cl_mem), &d_portal_normal);
+	clSetKernelArg(k, 2, sizeof(int), &numportals);
+	clSetKernelArg(k, 3, sizeof(int), &portallongs);
+	clSetKernelArg(k, 4, sizeof(float), &dotLimit);
+
+	size_t global = numportals;
+	clEnqueueNDRangeKernel(g_clManager.queue, k, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+	clFinish(g_clManager.queue);
+}
+
+void GPU_SectorPrune(cl_mem d_portalvis,
+	cl_mem d_portal_origin,
+	cl_mem d_portal_normal,
+	int numportals, int portallongs)
+{
+	float angleLimit = -0.1f; // 90° max
+
+	cl_kernel k = g_clManager.sector_prune_kernel;
+
+	clSetKernelArg(k, 0, sizeof(cl_mem), &d_portalvis);
+	clSetKernelArg(k, 1, sizeof(cl_mem), &d_portal_origin);
+	clSetKernelArg(k, 2, sizeof(cl_mem), &d_portal_normal);
+	clSetKernelArg(k, 3, sizeof(int), &numportals);
+	clSetKernelArg(k, 4, sizeof(int), &portallongs);
+	clSetKernelArg(k, 5, sizeof(float), &angleLimit);
+
+	size_t global = numportals;
+	clEnqueueNDRangeKernel(g_clManager.queue, k, 1, nullptr, &global, nullptr, 0, nullptr, nullptr);
+	clFinish(g_clManager.queue);
+}
+
+
+
 // Flood fill global sur GPU avec convergence
 void MassiveFloodFillGPU()
 {
@@ -764,7 +1119,72 @@ void MassiveFloodFillGPU()
 
 	g_clManager.buf_portalvis = d_portalvis; // IMPORTANT
 
+	// ============================================================
+	// BUILD LEAF -> PORTAL MAPPING (GPU VERSION)
+	// ============================================================
 
+	std::vector<int> leaf_first(portalclusters);
+	std::vector<int> leaf_count(portalclusters);
+	std::vector<int> leaf_portals;
+
+	for (int L = 0; L < portalclusters; ++L)
+	{
+		leaf_first[L] = (int)leaf_portals.size();
+
+		int cnt = leafs[L].portals.Count();
+		leaf_count[L] = cnt;
+
+		for (int i = 0; i < cnt; ++i)
+		{
+			// store portal index (portal_t pointer minus base pointer)
+			leaf_portals.push_back(leafs[L].portals[i] - portals);
+		}
+	}
+
+	// ========================= GPU BUFFERS =========================
+
+	cl_mem d_leaf_first = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(int) * portalclusters,
+		leaf_first.data(),
+		&err
+	);
+
+	cl_mem d_leaf_count = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(int) * portalclusters,
+		leaf_count.data(),
+		&err
+	);
+
+	cl_mem d_leaf_portals = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(int) * leaf_portals.size(),
+		leaf_portals.data(),
+		&err
+	);
+
+	// Buffer for portal → leaf mapping
+	std::vector<int> portal_leaf(numportals);
+	for (int i = 0; i < numportals; ++i)
+		portal_leaf[i] = portals[i].leaf;
+
+	cl_mem d_portal_leaf = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(int) * numportals,
+		portal_leaf.data(),
+		&err
+	);
+
+	// Store for kernel usage
+	g_clManager.buf_leaf_first = d_leaf_first;
+	g_clManager.buf_leaf_count = d_leaf_count;
+	g_clManager.buf_leaf_portals = d_leaf_portals;
+	g_clManager.buf_portal_leaf = d_portal_leaf;
 
 	// ============================
 	// BIND PRUNE KERNEL ARGS HERE
@@ -812,47 +1232,160 @@ void MassiveFloodFillGPU()
 	// ============================================================
 	// BFS PROPAGATION (CPU loop driving GPU)
 	// ============================================================
+	const int leafclusters = portalclusters;
+	const int leaflongs = leafbytes / 4; // 1 long = 4 bytes
+
+	// Flatten leafvis buffers
+	std::vector<uint> leafvis_flat(leafclusters* leaflongs, 0);
+	std::vector<uint> next_leafvis_flat(leafclusters* leaflongs, 0);
+
+	// Initial state: each leaf sees itself
+	for (int L = 0; L < leafclusters; ++L)
+	{
+		leafvis_flat[L * leaflongs + (L >> 5)] |= (1u << (L & 31));
+	}
+
+	size_t leafvis_size_bytes = leafvis_flat.size() * sizeof(uint);
+
+	// GPU buffers
+	cl_mem d_leafvis = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+		leafvis_size_bytes,
+		leafvis_flat.data(),
+		&err
+	);
+
+	cl_mem d_next_leafvis = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+		leafvis_size_bytes,
+		next_leafvis_flat.data(),
+		&err
+	);
+
+	// Loop until convergence
 	int changed = 1;
+	cl_mem d_changed_leaf = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE,
+		sizeof(int),
+		nullptr,
+		&err
+	);
+
+	size_t leaf_global = leafclusters;
+
 	while (changed)
 	{
 		changed = 0;
-		clEnqueueWriteBuffer(g_clManager.queue, d_changed, CL_TRUE, 0, sizeof(int), &changed, 0, nullptr, nullptr);
+		clEnqueueWriteBuffer(
+			g_clManager.queue,
+			d_changed_leaf,
+			CL_TRUE,
+			0,
+			sizeof(int),
+			&changed,
+			0,
+			nullptr,
+			nullptr
+		);
 
-		// Set kernel args
-		clSetKernelArg(kernel, 0, sizeof(cl_mem), &d_portalflood);
-		clSetKernelArg(kernel, 1, sizeof(cl_mem), &d_portalvis);
-		clSetKernelArg(kernel, 2, sizeof(cl_mem), &d_frontier);
-		clSetKernelArg(kernel, 3, sizeof(cl_mem), &d_next_frontier);
-		clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_changed);
-		clSetKernelArg(kernel, 5, sizeof(int), &numportals);
-		clSetKernelArg(kernel, 6, sizeof(int), &portallongs);
+		clSetKernelArg(g_clManager.leaf_kernel, 0, sizeof(cl_mem), &d_portalflood);
+		clSetKernelArg(g_clManager.leaf_kernel, 1, sizeof(cl_mem), &g_clManager.buf_leaf_first);
+		clSetKernelArg(g_clManager.leaf_kernel, 2, sizeof(cl_mem), &g_clManager.buf_leaf_count);
+		clSetKernelArg(g_clManager.leaf_kernel, 3, sizeof(cl_mem), &g_clManager.buf_leaf_portals);
+		clSetKernelArg(g_clManager.leaf_kernel, 4, sizeof(cl_mem), &g_clManager.buf_portal_leaf);
+		clSetKernelArg(g_clManager.leaf_kernel, 5, sizeof(cl_mem), &d_leafvis);
+		clSetKernelArg(g_clManager.leaf_kernel, 6, sizeof(cl_mem), &d_next_leafvis);
+		clSetKernelArg(g_clManager.leaf_kernel, 7, sizeof(cl_mem), &d_changed_leaf);
+		clSetKernelArg(g_clManager.leaf_kernel, 8, sizeof(int), &leafclusters);
+		clSetKernelArg(g_clManager.leaf_kernel, 9, sizeof(int), &leaflongs);
+		clSetKernelArg(g_clManager.leaf_kernel, 10, sizeof(int), &portallongs);
 
-		// Launch
-		err = clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &globalSize, nullptr, 0, nullptr, nullptr);
-		clFinish(g_clManager.queue);
+		// ============================================================
+		// PHASE 3 — BFS GPU MULTI-STEP PROPAGATION
+		// ============================================================
 
-		// Read "changed"
-		clEnqueueReadBuffer(g_clManager.queue, d_changed, CL_TRUE, 0, sizeof(int), &changed, 0, nullptr, nullptr);
+		int changed_gpu = 1;
+		cl_mem d_changed_gpu = clCreateBuffer(
+			g_clManager.context,
+			CL_MEM_READ_WRITE,
+			sizeof(int),
+			nullptr,
+			&err
+		);
 
-		// swap frontier buffers
-		std::swap(d_frontier, d_next_frontier);
+		while (changed_gpu)
+		{
+			changed_gpu = 0;
 
-		clFinish(g_clManager.queue);
+			clEnqueueWriteBuffer(
+				g_clManager.queue,
+				d_changed_gpu,
+				CL_TRUE,
+				0,
+				sizeof(int),
+				&changed_gpu,
+				0,
+				nullptr,
+				nullptr
+			);
 
-		// clear next frontier
-		cl_uint zero = 0;
-		clEnqueueFillBuffer(g_clManager.queue, d_next_frontier, &zero, sizeof(uint), 0, sizeof(uint) * totalWords, 0, nullptr, nullptr);
+			size_t global = leafclusters;
+			clSetKernelArg(g_clManager.leaf_kernel, 7, sizeof(cl_mem), &d_changed_gpu);
+
+			CL_CHECK_ERR(
+				clEnqueueNDRangeKernel(g_clManager.queue, g_clManager.leaf_kernel,
+					1, nullptr, &global, nullptr, 0, nullptr, nullptr),
+				"launch pvs_leaf_propagate"
+			);
+
+			clFinish(g_clManager.queue);
+
+			// Lire si quelque chose a changé
+			clEnqueueReadBuffer(
+				g_clManager.queue,
+				d_changed_gpu,
+				CL_TRUE,
+				0,
+				sizeof(int),
+				&changed_gpu,
+				0,
+				nullptr,
+				nullptr
+			);
+		}
+
+		clEnqueueReadBuffer(
+			g_clManager.queue,
+			d_changed_leaf,
+			CL_TRUE,
+			0,
+			sizeof(int),
+			&changed,
+			0,
+			nullptr,
+			nullptr
+		);
+
+		// Swap buffers
+		std::swap(d_leafvis, d_next_leafvis);
 	}
-
 	// ============================================================
 	// Copy back final GPU result
 	// ============================================================
-	clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(uint)* totalWords, portalvis_flat.data(), 0, nullptr, nullptr);
+	clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(uint) * totalWords, portalvis_flat.data(), 0, nullptr, nullptr);
 
 	// ============================================================
 	// GPU PRUNE PHASE (toujours exécuté)
 	// ============================================================
-	RunTinyPortalPrune(numportals, portallongs, prune_min_radius);
+
+
+
+	// TEMPORAIREMENT DÉSACTIVÉS POUR TEST SANS PRUNE !
+	
+	RunTinyPortalPrune(numportals, portallongs, prune_min_radius); 
 	RunBackfacePrune(numportals, portallongs, prune_backface_dot);
 	RunAnglePrune(numportals, portallongs, prune_angle_dot);
 	RunConvexityPrune(numportals, portallongs, prune_convex_dot);
@@ -902,23 +1435,32 @@ void MassiveFloodFillGPU()
 	// ============================================================
 	if (g_gpuPreset <= 1)
 	{
-		TRACE_MSG("Starting UNIVERSAL HARD-HP PVS PRUNE...");
+		TRACE_MSG("GPU-PVS: PRE-PROPAGATION PRUNE START");
+		RunTinyPortalPrune(numportals, portallongs, prune_min_radius);
+		RunBackfacePrune(numportals, portallongs, prune_backface_dot);
+		RunAnglePrune(numportals, portallongs, prune_angle_dot);
+		RunConvexityPrune(numportals, portallongs, prune_convex_dot);
+		RunFrustumPrune(numportals, portallongs, prune_frustum_dot);
+		GPU_DistancePrune(d_portalvis, g_clManager.buf_portal_origin, numportals, portallongs);
+		GPU_OppositeFacingPrune(d_portalvis, g_clManager.buf_portal_normal, numportals, portallongs);
+		GPU_SectorPrune(d_portalvis, g_clManager.buf_portal_origin, g_clManager.buf_portal_normal, numportals, portallongs);
+		clFinish(g_clManager.queue);
+		TRACE_MSG("GPU-PVS: PRE-PROPAGATION PRUNE END");
 
-		for (int i = 0; i < numportals; ++i)
-		{
-			uint* vis_i = portalvis_flat.data() + i * portallongs;
 
-			for (int j = 0; j < numportals; ++j)
-			{
-				if (i == j) continue;
-
-				uint* vis_j = portalvis_flat.data() + j * portallongs;
-
-				// ... ici tu peux remettre tes règles CPU si tu veux
-			}
-		}
-
-		TRACE_MSG("UNIVERSAL HARD-HP PRUNE DONE.");
+		TRACE_MSG("Leaf→Leaf propagation start (BFS-GPU)...");
+		// launch kernel floodfill_kernel (already set up elsewhere)
+		size_t global = numleafs;
+		cl_kernel kernel = g_clManager.leaf_kernel;
+		clSetKernelArg(kernel, 0, sizeof(cl_mem), &g_clManager.buf_leaf_first);
+		clSetKernelArg(kernel, 1, sizeof(cl_mem), &g_clManager.buf_leaf_count);
+		clSetKernelArg(kernel, 2, sizeof(cl_mem), &g_clManager.buf_leaf_portals);
+		clSetKernelArg(kernel, 3, sizeof(cl_mem), &g_clManager.buf_portal_leaf);
+		clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalflood);
+		clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_leafvis);
+		CL_CHECK_ERR(clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &global, nullptr, 0, nullptr, nullptr), "launch pvs_leaf_propagate");
+		clFinish(g_clManager.queue);
+		TRACE_MSG("Leaf→Leaf propagation done.");
 	}
 	else
 	{
@@ -928,34 +1470,90 @@ void MassiveFloodFillGPU()
 
 	TRACE_MSG("Cluster merge pass...");
 
-	for (int i = 0; i < numportals; ++i)
+	// ============================================================
+	// PHASE 3 — CLUSTERMERGE V2
+	// ============================================================
+
+	for (int i = 0; i < numportals; i++)
 	{
-		portal_t* Pi = &portals[i];
-		uint* vis_i = portalvis_flat.data() + i * portallongs;
-
-		for (int j = 0; j < numportals; ++j)
+		for (int j = i + 1; j < numportals; j++)
 		{
-			if (i == j) continue;
-			portal_t* Pj = &portals[j];
+			// Distance < 64m
+			float dx = portal_origin[i].s[0] - portal_origin[j].s[0];
+			float dy = portal_origin[i].s[1] - portal_origin[j].s[1];
+			float dz = portal_origin[i].s[2] - portal_origin[j].s[2];
 
-			if ((Pi->origin - Pj->origin).Length() < CLUSTER_MERGE_DIST)
+			float d2 = dx * dx + dy * dy + dz * dz;
+
+			if (d2 < 4096.0f * 4096.0f)
 			{
-				uint* vis_j = portalvis_flat.data() + j * portallongs;
-				for (int w = 0; w < portallongs; ++w)
-					vis_i[w] |= vis_j[w];
+				uint32_t* A = (uint32_t*)portals[i].portalvis;
+				uint32_t* B = (uint32_t*)portals[j].portalvis;
+
+				for (int w = 0; w < portallongs; w++)
+				{
+					uint32_t m = A[w] | B[w];
+					A[w] = B[w] = m;
+				}
 			}
 		}
 	}
 
+	TRACE_MSG("ClusterMergeV2 OK");
 
-	// Apply result to CPU portal structures
-	for (int i = 0; i < numportals; ++i)
+
+	// Read leafvis from GPU
+	clEnqueueReadBuffer(
+		g_clManager.queue,
+		d_leafvis,
+		CL_TRUE,
+		0,
+		leafvis_size_bytes,
+		leafvis_flat.data(),
+		0,
+		nullptr,
+		nullptr
+	);
+
+	for (int P = 0; P < numportals; ++P)
 	{
-		portal_t* p = &portals[i];
-		memcpy(p->portalvis, portalvis_flat.data() + i * portallongs, portalbytes);
-		p->nummightsee = CountBits((byte*)p->portalvis, g_numportals * 2);
-		p->status = stat_done;
+		portal_t* pa = &portals[P];
+		int Lsrc = pa->leaf;
+
+		// Réinitialiser le portalvis
+		memset(pa->portalvis, 0, portalbytes);
+
+		// LeafVis GPU du leaf source
+		uint32_t* leafbm = &leafvis_flat[Lsrc * leaflongs];
+
+		// Pour chaque leaf visible depuis Lsrc
+		for (int Ldst = 0; Ldst < leafclusters; ++Ldst)
+		{
+			if (!(leafbm[Ldst >> 5] & (1u << (Ldst & 31))))
+				continue;
+
+			int first = leaf_first[Ldst];
+			int count = leaf_count[Ldst];
+
+			for (int k = 0; k < count; ++k)
+			{
+				int Pdst = leaf_portals[first + k];
+
+				// Marquer le portail distant comme visible
+				SetBit(pa->portalvis, Pdst);
+
+				// Fusion réciproque (important pour corriger mismatches)
+				SetBit(portals[Pdst].portalvis, P);
+			}
+		}
+
+		pa->nummightsee = CountBits(pa->portalvis, numportals);
+		pa->status = stat_done;
 	}
+
+	TRACE_MSG("Leaf->Portal remap completed (PHASE 3 FIX)");
+
+
 
 	TRACE_MSG("GPU PVS propagation completed.");
 }
@@ -1184,18 +1782,18 @@ int g_TraceClusterStop = -1;
 	save as passagemightsee
 
 
-  void CalcMightSee (leaf_t *leaf, 
+  void CalcMightSee (leaf_t *leaf,
 */
 
 
-int CountBits (byte *bits, int numbits)
+int CountBits(byte* bits, int numbits)
 {
 	int		i;
 	int		c;
 
 	c = 0;
-	for (i=0 ; i<numbits ; i++)
-		if ( CheckBit( bits, i ) )
+	for (i = 0; i < numbits; i++)
+		if (CheckBit(bits, i))
 			c++;
 
 	return c;
@@ -1214,28 +1812,28 @@ extern bool g_bVMPIEarlyExit;
 #endif
 
 
-void CheckStack (leaf_t *leaf, threaddata_t *thread)
+void CheckStack(leaf_t* leaf, threaddata_t* thread)
 {
-	pstack_t	*p, *p2;
+	pstack_t* p, * p2;
 
-	for (p=thread->pstack_head.next ; p ; p=p->next)
+	for (p = thread->pstack_head.next; p; p = p->next)
 	{
-//		Msg ("=");
+		//		Msg ("=");
 		if (p->leaf == leaf)
-			Error ("CheckStack: leaf recursion");
-		for (p2=thread->pstack_head.next ; p2 != p ; p2=p2->next)
+			Error("CheckStack: leaf recursion");
+		for (p2 = thread->pstack_head.next; p2 != p; p2 = p2->next)
 			if (p2->leaf == p->leaf)
-				Error ("CheckStack: late leaf recursion");
+				Error("CheckStack: late leaf recursion");
 	}
-//	Msg ("\n");
+	//	Msg ("\n");
 }
 
 
-winding_t *AllocStackWinding (pstack_t *stack)
+winding_t* AllocStackWinding(pstack_t* stack)
 {
 	int		i;
 
-	for (i=0 ; i<3 ; i++)
+	for (i = 0; i < 3; i++)
 	{
 		if (stack->freewindings[i])
 		{
@@ -1244,22 +1842,22 @@ winding_t *AllocStackWinding (pstack_t *stack)
 		}
 	}
 
-	Error ("Out of memory. AllocStackWinding: failed");
+	Error("Out of memory. AllocStackWinding: failed");
 
 	return NULL;
 }
 
-void FreeStackWinding (winding_t *w, pstack_t *stack)
+void FreeStackWinding(winding_t* w, pstack_t* stack)
 {
 	int		i;
 
 	i = w - stack->windings;
 
-	if (i<0 || i>2)
+	if (i < 0 || i>2)
 		return;		// not from local
 
 	if (stack->freewindings[i])
-		Error ("FreeStackWinding: allready free");
+		Error("FreeStackWinding: allready free");
 	stack->freewindings[i] = 1;
 }
 
@@ -1274,7 +1872,7 @@ ChopWinding
 #pragma warning (disable:4701)
 #endif
 
-winding_t	*ChopWinding (winding_t *in, pstack_t *stack, plane_t *split)
+winding_t* ChopWinding(winding_t* in, pstack_t* stack, plane_t* split)
 {
 	vec_t	dists[128];
 	int		sides[128];
@@ -1282,14 +1880,14 @@ winding_t	*ChopWinding (winding_t *in, pstack_t *stack, plane_t *split)
 	vec_t	dot;
 	int		i, j;
 	Vector	mid;
-	winding_t	*neww;
+	winding_t* neww;
 
 	counts[0] = counts[1] = counts[2] = 0;
 
-// determine sides for each point
-	for (i=0 ; i<in->numpoints ; i++)
+	// determine sides for each point
+	for (i = 0; i < in->numpoints; i++)
 	{
-		dot = DotProduct (in->points[i], split->normal);
+		dot = DotProduct(in->points[i], split->normal);
 		dot -= split->dist;
 		dists[i] = dot;
 		if (dot > ON_VIS_EPSILON)
@@ -1305,73 +1903,73 @@ winding_t	*ChopWinding (winding_t *in, pstack_t *stack, plane_t *split)
 
 	if (!counts[1])
 		return in;		// completely on front side
-	
+
 	if (!counts[0])
 	{
-		FreeStackWinding (in, stack);
+		FreeStackWinding(in, stack);
 		return NULL;
 	}
 
 	sides[i] = sides[0];
 	dists[i] = dists[0];
-	
-	neww = AllocStackWinding (stack);
+
+	neww = AllocStackWinding(stack);
 
 	neww->numpoints = 0;
 
-	for (i=0 ; i<in->numpoints ; i++)
+	for (i = 0; i < in->numpoints; i++)
 	{
 		Vector& p1 = in->points[i];
 
 		if (neww->numpoints == MAX_POINTS_ON_FIXED_WINDING)
 		{
-			FreeStackWinding (neww, stack);
+			FreeStackWinding(neww, stack);
 			return in;		// can't chop -- fall back to original
 		}
 
 		if (sides[i] == SIDE_ON)
 		{
-			VectorCopy (p1, neww->points[neww->numpoints]);
+			VectorCopy(p1, neww->points[neww->numpoints]);
 			neww->numpoints++;
 			continue;
 		}
-	
+
 		if (sides[i] == SIDE_FRONT)
 		{
-			VectorCopy (p1, neww->points[neww->numpoints]);
+			VectorCopy(p1, neww->points[neww->numpoints]);
 			neww->numpoints++;
 		}
-		
-		if (sides[i+1] == SIDE_ON || sides[i+1] == sides[i])
+
+		if (sides[i + 1] == SIDE_ON || sides[i + 1] == sides[i])
 			continue;
-			
+
 		if (neww->numpoints == MAX_POINTS_ON_FIXED_WINDING)
 		{
-			FreeStackWinding (neww, stack);
+			FreeStackWinding(neww, stack);
 			return in;		// can't chop -- fall back to original
 		}
 
-	// generate a split point
-		Vector& p2 = in->points[(i+1)%in->numpoints];
-		
-		dot = dists[i] / (dists[i]-dists[i+1]);
-		for (j=0 ; j<3 ; j++)
+		// generate a split point
+		Vector& p2 = in->points[(i + 1) % in->numpoints];
+
+		dot = dists[i] / (dists[i] - dists[i + 1]);
+		for (j = 0; j < 3; j++)
 		{	// avoid round off error when possible
 			if (split->normal[j] == 1)
 				mid[j] = split->dist;
 			else if (split->normal[j] == -1)
 				mid[j] = -split->dist;
 			else
-				mid[j] = p1[j] + dot*(p2[j]-p1[j]);
+				mid[j] = p1[j] + dot * (p2[j] - p1[j]);
 		}
-			
-		VectorCopy (mid, neww->points[neww->numpoints]);
+
+		VectorCopy(mid, neww->points[neww->numpoints]);
 		neww->numpoints++;
 	}
-	
-// free the original winding
-	FreeStackWinding (in, stack);
-	
+
+	// free the original winding
+	FreeStackWinding(in, stack);
+
 	return neww;
 }
 
@@ -1395,7 +1993,7 @@ order goes source, pass, target.  If the order goes pass, source, target then
 flipclip should be set.
 ==============
 */
-winding_t	*ClipToSeperators (winding_t *source, winding_t *pass, winding_t *target, bool flipclip, pstack_t *stack)
+winding_t* ClipToSeperators(winding_t* source, winding_t* pass, winding_t* target, bool flipclip, pstack_t* stack)
 {
 	int			i, j, k, l;
 	plane_t		plane;
@@ -1405,51 +2003,51 @@ winding_t	*ClipToSeperators (winding_t *source, winding_t *pass, winding_t *targ
 	int			counts[3];
 	bool		fliptest;
 
-// check all combinations	
-	for (i=0 ; i<source->numpoints ; i++)
+	// check all combinations	
+	for (i = 0; i < source->numpoints; i++)
 	{
-		l = (i+1)%source->numpoints;
-		VectorSubtract (source->points[l] , source->points[i], v1);
+		l = (i + 1) % source->numpoints;
+		VectorSubtract(source->points[l], source->points[i], v1);
 
-	// fing a vertex of pass that makes a plane that puts all of the
-	// vertexes of pass on the front side and all of the vertexes of
-	// source on the back side
-		for (j=0 ; j<pass->numpoints ; j++)
+		// fing a vertex of pass that makes a plane that puts all of the
+		// vertexes of pass on the front side and all of the vertexes of
+		// source on the back side
+		for (j = 0; j < pass->numpoints; j++)
 		{
-			VectorSubtract (pass->points[j], source->points[i], v2);
+			VectorSubtract(pass->points[j], source->points[i], v2);
 
-			plane.normal[0] = v1[1]*v2[2] - v1[2]*v2[1];
-			plane.normal[1] = v1[2]*v2[0] - v1[0]*v2[2];
-			plane.normal[2] = v1[0]*v2[1] - v1[1]*v2[0];
-			
-		// if points don't make a valid plane, skip it
+			plane.normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
+			plane.normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
+			plane.normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
+
+			// if points don't make a valid plane, skip it
 
 			length = plane.normal[0] * plane.normal[0]
-			+ plane.normal[1] * plane.normal[1]
-			+ plane.normal[2] * plane.normal[2];
-			
+				+ plane.normal[1] * plane.normal[1]
+				+ plane.normal[2] * plane.normal[2];
+
 			if (length < ON_VIS_EPSILON)
 				continue;
 
-			length = 1/sqrt(length);
-			
+			length = 1 / sqrt(length);
+
 			plane.normal[0] *= length;
 			plane.normal[1] *= length;
 			plane.normal[2] *= length;
 
-			plane.dist = DotProduct (pass->points[j], plane.normal);
+			plane.dist = DotProduct(pass->points[j], plane.normal);
 
-		//
-		// find out which side of the generated seperating plane has the
-		// source portal
-		//
+			//
+			// find out which side of the generated seperating plane has the
+			// source portal
+			//
 #if 1
 			fliptest = false;
-			for (k=0 ; k<source->numpoints ; k++)
+			for (k = 0; k < source->numpoints; k++)
 			{
 				if (k == i || k == l)
 					continue;
-				d = DotProduct (source->points[k], plane.normal) - plane.dist;
+				d = DotProduct(source->points[k], plane.normal) - plane.dist;
 				if (d < -ON_VIS_EPSILON)
 				{	// source is on the negative side, so we want all
 					// pass and target on the positive side
@@ -1468,25 +2066,25 @@ winding_t	*ClipToSeperators (winding_t *source, winding_t *pass, winding_t *targ
 #else
 			fliptest = flipclip;
 #endif
-		//
-		// flip the normal if the source portal is backwards
-		//
+			//
+			// flip the normal if the source portal is backwards
+			//
 			if (fliptest)
 			{
-				VectorSubtract (vec3_origin, plane.normal, plane.normal);
+				VectorSubtract(vec3_origin, plane.normal, plane.normal);
 				plane.dist = -plane.dist;
 			}
 #if 1
-		//
-		// if all of the pass portal points are now on the positive side,
-		// this is the seperating plane
-		//
+			//
+			// if all of the pass portal points are now on the positive side,
+			// this is the seperating plane
+			//
 			counts[0] = counts[1] = counts[2] = 0;
-			for (k=0 ; k<pass->numpoints ; k++)
+			for (k = 0; k < pass->numpoints; k++)
 			{
-				if (k==j)
+				if (k == j)
 					continue;
-				d = DotProduct (pass->points[k], plane.normal) - plane.dist;
+				d = DotProduct(pass->points[k], plane.normal) - plane.dist;
 				if (d < -ON_VIS_EPSILON)
 					break;
 				else if (d > ON_VIS_EPSILON)
@@ -1496,32 +2094,32 @@ winding_t	*ClipToSeperators (winding_t *source, winding_t *pass, winding_t *targ
 			}
 			if (k != pass->numpoints)
 				continue;	// points on negative side, not a seperating plane
-				
+
 			if (!counts[0])
 				continue;	// planar with seperating plane
 #else
-			k = (j+1)%pass->numpoints;
-			d = DotProduct (pass->points[k], plane.normal) - plane.dist;
+			k = (j + 1) % pass->numpoints;
+			d = DotProduct(pass->points[k], plane.normal) - plane.dist;
 			if (d < -ON_VIS_EPSILON)
 				continue;
-			k = (j+pass->numpoints-1)%pass->numpoints;
-			d = DotProduct (pass->points[k], plane.normal) - plane.dist;
+			k = (j + pass->numpoints - 1) % pass->numpoints;
+			d = DotProduct(pass->points[k], plane.normal) - plane.dist;
 			if (d < -ON_VIS_EPSILON)
-				continue;			
+				continue;
 #endif
-		//
-		// flip the normal if we want the back side
-		//
+			//
+			// flip the normal if we want the back side
+			//
 			if (flipclip)
 			{
-				VectorSubtract (vec3_origin, plane.normal, plane.normal);
+				VectorSubtract(vec3_origin, plane.normal, plane.normal);
 				plane.dist = -plane.dist;
 			}
-			
-		//
-		// clip target by the seperating plane
-		//
-			target = ChopWinding (target, stack, &plane);
+
+			//
+			// clip target by the seperating plane
+			//
+			target = ChopWinding(target, stack, &plane);
 			if (!target)
 				return NULL;		// target is not visible
 
@@ -1529,7 +2127,7 @@ winding_t	*ClipToSeperators (winding_t *source, winding_t *pass, winding_t *targ
 //			j = pass->numpoints;
 		}
 	}
-	
+
 	return target;
 }
 
@@ -1541,90 +2139,90 @@ public:
 	CThreadFastMutex	m_mutex;
 } g_PortalTrace;
 
-void WindingCenter (winding_t *w, Vector &center)
+void WindingCenter(winding_t* w, Vector& center)
 {
 	int		i;
 	float	scale;
 
-	VectorCopy (vec3_origin, center);
-	for (i=0 ; i<w->numpoints ; i++)
-		VectorAdd (w->points[i], center, center);
+	VectorCopy(vec3_origin, center);
+	for (i = 0; i < w->numpoints; i++)
+		VectorAdd(w->points[i], center, center);
 
-	scale = 1.0/w->numpoints;
-	VectorScale (center, scale, center);
+	scale = 1.0 / w->numpoints;
+	VectorScale(center, scale, center);
 }
 
-Vector ClusterCenter( int cluster )
+Vector ClusterCenter(int cluster)
 {
 	Vector mins, maxs;
 	ClearBounds(mins, maxs);
 	int count = leafs[cluster].portals.Count();
-	for ( int i = 0; i < count; i++ )
+	for (int i = 0; i < count; i++)
 	{
-		winding_t *w = leafs[cluster].portals[i]->winding;
-		for ( int j = 0; j < w->numpoints; j++ )
+		winding_t* w = leafs[cluster].portals[i]->winding;
+		for (int j = 0; j < w->numpoints; j++)
 		{
-			AddPointToBounds( w->points[j], mins, maxs );
+			AddPointToBounds(w->points[j], mins, maxs);
 		}
 	}
 	return (mins + maxs) * 0.5f;
 }
 
 
-void DumpPortalTrace( pstack_t *pStack )
+void DumpPortalTrace(pstack_t* pStack)
 {
 	AUTO_LOCK(g_PortalTrace.m_mutex);
-	if ( g_PortalTrace.m_list.Count() )
+	if (g_PortalTrace.m_list.Count())
 		return;
 
 	Warning("Dumped cluster trace!!!\n");
 	Vector	mid;
-	mid = ClusterCenter( g_TraceClusterStart );
+	mid = ClusterCenter(g_TraceClusterStart);
 	g_PortalTrace.m_list.AddToTail(mid);
-	for ( ; pStack != NULL; pStack = pStack->next )
+	for (; pStack != NULL; pStack = pStack->next)
 	{
-		winding_t *w = pStack->pass ? pStack->pass : pStack->portal->winding;
-		WindingCenter (w, mid);
+		winding_t* w = pStack->pass ? pStack->pass : pStack->portal->winding;
+		WindingCenter(w, mid);
 		g_PortalTrace.m_list.AddToTail(mid);
-		for ( int i = 0; i < w->numpoints; i++ )
+		for (int i = 0; i < w->numpoints; i++)
 		{
 			g_PortalTrace.m_list.AddToTail(w->points[i]);
 			g_PortalTrace.m_list.AddToTail(mid);
 		}
-		for ( int i = 0; i < w->numpoints; i++ )
+		for (int i = 0; i < w->numpoints; i++)
 		{
 			g_PortalTrace.m_list.AddToTail(w->points[i]);
 		}
 		g_PortalTrace.m_list.AddToTail(w->points[0]);
 		g_PortalTrace.m_list.AddToTail(mid);
 	}
-	mid = ClusterCenter( g_TraceClusterStop );
+	mid = ClusterCenter(g_TraceClusterStop);
 	g_PortalTrace.m_list.AddToTail(mid);
 }
 
-void WritePortalTrace( const char *source )
+void WritePortalTrace(const char* source)
 {
 	Vector	mid;
-	FILE	*linefile;
+	FILE* linefile;
 	char	filename[1024];
 
-	if ( !g_PortalTrace.m_list.Count() )
+	if (!g_PortalTrace.m_list.Count())
 	{
-		Warning("No trace generated from %d to %d\n", g_TraceClusterStart, g_TraceClusterStop );
+		Warning("No trace generated from %d to %d\n", g_TraceClusterStart, g_TraceClusterStop);
 		return;
 	}
 
-	sprintf (filename, "%s.lin", source);
-	linefile = fopen (filename, "w");
+	sprintf(filename, "%s.lin", source);
+	linefile = fopen(filename, "w");
 	if (!linefile)
-		Error ("Couldn't open %s\n", filename);
+		Error("Couldn't open %s\n", filename);
 
-	for ( int i = 0; i < g_PortalTrace.m_list.Count(); i++ )
+	for (int i = 0; i < g_PortalTrace.m_list.Count(); i++)
 	{
 		Vector p = g_PortalTrace.m_list[i];
-		fprintf (linefile, "%f %f %f\n", p[0], p[1], p[2]);
+		fprintf(linefile, "%f %f %f\n", p[0], p[1], p[2]);
 	}
-	fclose (linefile);
+	fclose(linefile);
 	Warning("Wrote %s!!!\n", filename);
 }
 
@@ -1679,6 +2277,9 @@ void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstac
 
 		p = leaf->portals[i];
 		pnum = p - portals;
+
+		if (!CheckBit(thread->base->portalvis, pnum))
+			continue;
 
 		if (!(prevstack->mightsee[pnum >> 3] & (1 << (pnum & 7))))
 		{
@@ -1816,10 +2417,10 @@ void PortalFlow(int iThread, int portalnum)
 
 void PortalFlow_CPU(int iThread, int portalnum)
 {
-	threaddata_t	data;
-	int				i;
+	threaddata_t data;
+	int i;
 	portal_t* p;
-	int				c_might, c_can;
+	int c_might, c_can;
 
 	p = sorted_portals[portalnum];
 	p->status = stat_working;
@@ -1835,8 +2436,20 @@ void PortalFlow_CPU(int iThread, int portalnum)
 	for (i = 0; i < portallongs; i++)
 		((long*)data.pstack_head.mightsee)[i] = ((long*)p->portalflood)[i];
 
-	RecursiveLeafFlow_CPU(p->leaf, &data, &data.pstack_head);
+	// ============================================================
+	// GPU ASSIST FILTER (Phase 2)
+	// ============================================================
+	uint32_t* gpuMask = (uint32_t*)p->portalvis;
 
+	for (int j = 0; j < g_numportals * 2; ++j)
+	{
+		if (!CheckBit(gpuMask, j))
+		{
+			ClearBit(data.pstack_head.mightsee, j);
+		}
+	}
+
+	RecursiveLeafFlow_CPU(p->leaf, &data, &data.pstack_head);
 
 	p->status = stat_done;
 
@@ -1846,6 +2459,7 @@ void PortalFlow_CPU(int iThread, int portalnum)
 		(int)(p - portals), c_might, c_can, data.c_chains);
 }
 
+
 int		c_flood, c_vis;
 
 /*
@@ -1854,28 +2468,28 @@ SimpleFlood
 
 ==================
 */
-void SimpleFlood (portal_t *srcportal, int leafnum)
+void SimpleFlood(portal_t* srcportal, int leafnum)
 {
 	int		i;
-	leaf_t	*leaf;
-	portal_t	*p;
+	leaf_t* leaf;
+	portal_t* p;
 	int		pnum;
 
 	leaf = &leafs[leafnum];
-	
-	for (i=0 ; i<leaf->portals.Count(); i++)
+
+	for (i = 0; i < leaf->portals.Count(); i++)
 	{
 		p = leaf->portals[i];
 		pnum = p - portals;
-		if ( !CheckBit( srcportal->portalfront, pnum ) )
+		if (!CheckBit(srcportal->portalfront, pnum))
 			continue;
 
-		if ( CheckBit( srcportal->portalflood, pnum ) )
+		if (CheckBit(srcportal->portalflood, pnum))
 			continue;
 
-		SetBit( srcportal->portalflood, pnum );
-		
-		SimpleFlood (srcportal, p->leaf);
+		SetBit(srcportal->portalflood, pnum);
+
+		SimpleFlood(srcportal, p->leaf);
 	}
 }
 
@@ -1885,35 +2499,35 @@ BasePortalVis [OLD]
 ==============
 */
 
-void BasePortalVis (int iThread, int portalnum)
+void BasePortalVis(int iThread, int portalnum)
 {
 	int			j, k;
-	portal_t	*tp, *p;
+	portal_t* tp, * p;
 	float		d;
-	winding_t	*w;
+	winding_t* w;
 	Vector		segment;
 	double		dist2, minDist2;
 
 	// get the portal
-	p = portals+portalnum;
+	p = portals + portalnum;
 
 	//
 	// allocate memory for bitwise vis solutions for this portal
 	//
-	p->portalfront = (byte*)malloc (portalbytes);
-	memset (p->portalfront, 0, portalbytes);
+	p->portalfront = (byte*)malloc(portalbytes);
+	memset(p->portalfront, 0, portalbytes);
 
-	p->portalflood = (byte*)malloc (portalbytes);
-	memset (p->portalflood, 0, portalbytes);
-	
-	p->portalvis = (byte*)malloc (portalbytes);
+	p->portalflood = (byte*)malloc(portalbytes);
+	memset(p->portalflood, 0, portalbytes);
+
+	p->portalvis = (byte*)malloc(portalbytes);
 
 	memccpy(p->portalvis, p->portalflood, 0, portalbytes);
-	
+
 	//
 	// test the given portal against all of the portals in the map
 	//
-	for (j=0, tp = portals ; j<g_numportals*2 ; j++, tp++)
+	for (j = 0, tp = portals; j < g_numportals * 2; j++, tp++)
 	{
 		// don't test against itself
 		if (j == portalnum)
@@ -1923,9 +2537,9 @@ void BasePortalVis (int iThread, int portalnum)
 		//
 		//
 		w = tp->winding;
-		for (k=0 ; k<w->numpoints ; k++)
+		for (k = 0; k < w->numpoints; k++)
 		{
-			d = DotProduct (w->points[k], p->plane.normal) - p->plane.dist;
+			d = DotProduct(w->points[k], p->plane.normal) - p->plane.dist;
 			if (d > ON_VIS_EPSILON)
 				break;
 		}
@@ -1936,9 +2550,9 @@ void BasePortalVis (int iThread, int portalnum)
 		//
 		//
 		w = p->winding;
-		for (k=0 ; k<w->numpoints ; k++)
+		for (k = 0; k < w->numpoints; k++)
 		{
-			d = DotProduct (w->points[k], tp->plane.normal) - tp->plane.dist;
+			d = DotProduct(w->points[k], tp->plane.normal) - tp->plane.dist;
 			if (d < -ON_VIS_EPSILON)
 				break;
 		}
@@ -1949,32 +2563,32 @@ void BasePortalVis (int iThread, int portalnum)
 		// if using radius visibility -- check to see if any portal points lie inside of the
 		// radius given
 		//
-		if( g_bUseRadius )
+		if (g_bUseRadius)
 		{
 			w = tp->winding;
 			minDist2 = 1024000000.0;			// 32000^2
-			for( k = 0; k < w->numpoints; k++ )
+			for (k = 0; k < w->numpoints; k++)
 			{
-				VectorSubtract( w->points[k], p->origin, segment );
-				dist2 = ( segment[0] * segment[0] ) + ( segment[1] * segment[1] ) + ( segment[2] * segment[2] );
-				if( dist2 < minDist2 )
+				VectorSubtract(w->points[k], p->origin, segment);
+				dist2 = (segment[0] * segment[0]) + (segment[1] * segment[1]) + (segment[2] * segment[2]);
+				if (dist2 < minDist2)
 				{
 					minDist2 = dist2;
 				}
 			}
 
-			if( minDist2 > g_VisRadius )
+			if (minDist2 > g_VisRadius)
 				continue;
 		}
 
 		// add current portal to given portal's list of visible portals
-		SetBit( p->portalfront, j );
+		SetBit(p->portalfront, j);
 	}
-	
-	SimpleFlood (p, p->leaf);
 
-	p->nummightsee = CountBits (p->portalflood, g_numportals*2);
-//	Msg ("portal %i: %i mightsee\n", portalnum, p->nummightsee);
+	SimpleFlood(p, p->leaf);
+
+	p->nummightsee = CountBits(p->portalflood, g_numportals * 2);
+	//	Msg ("portal %i: %i mightsee\n", portalnum, p->nummightsee);
 	c_flood += p->nummightsee;
 }
 
@@ -1983,7 +2597,7 @@ void BasePortalVis (int iThread, int portalnum)
 /*
 ===============================================================================
 
-This is a second order aproximation 
+This is a second order aproximation
 
 Calculates portalvis bit vector
 
@@ -2008,8 +2622,8 @@ void RecursiveLeafBitFlow(int leafnum, byte* mightsee, byte* cansee)
 	byte		newmight[MAX_PORTALS/8];
 
 	leaf = &leafs[leafnum];
-	
-// check all portals for flowing into other leafs	
+
+// check all portals for flowing into other leafs
 	for (i=0 ; i<leaf->portals.Count(); i++)
 	{
 		p = leaf->portals[i];
@@ -2023,7 +2637,7 @@ void RecursiveLeafBitFlow(int leafnum, byte* mightsee, byte* cansee)
 		more = 0;
 		for (j=0 ; j<portallongs ; j++)
 		{
-			((long *)newmight)[j] = ((long *)mightsee)[j] 
+			((long *)newmight)[j] = ((long *)mightsee)[j]
 				& ((long *)p->portalflood)[j];
 			more |= ((long *)newmight)[j] & ~((long *)cansee)[j];
 		}
@@ -2034,7 +2648,7 @@ void RecursiveLeafBitFlow(int leafnum, byte* mightsee, byte* cansee)
 		SetBit( cansee, pnum );
 
 		RecursiveLeafBitFlow (p->leaf, newmight, cansee);
-	}	
+	}
 }
 */
 /*
@@ -2059,5 +2673,5 @@ void BetterPortalVis (int portalnum)
 
 
 struct OpenCLCleanup {
-    ~OpenCLCleanup() { g_clManager.cleanup(); }
+	~OpenCLCleanup() { g_clManager.cleanup(); }
 } g_OpenCLCleanup;

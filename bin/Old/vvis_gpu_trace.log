@@ -1,0 +1,23 @@
+[1763296008363] ENTER OpenCLManager::init_once
+[1763296008363] OpenCLManager:: starting ! 
+[1763296008401] [CL OK]  clGetPlatformIDs
+[1763296008401] [CL OK]  clGetDeviceIDs
+[1763296008467] [CL OK]  clCreateContext
+[1763296008467] [CL OK]  clCreateCommandQueue
+[1763296008467] [CL OK]  clCreateProgramWithSource
+[1763296008474] [CL OK]  clBuildProgram
+[1763296008474] [CL OK]  clCreateKernel pvs_propagate
+[1763296008474] OpenCLManager::init_once() done, OK
+[1763296008474] [CL OK]  create tiny_portal_prune
+[1763296008474] [CL OK]  create backface_prune
+[1763296008474] [CL OK]  create angle_prune
+[1763296008474] [CL OK]  create convexity_prune
+[1763296008474] [CL OK]  create frustum_prune
+[1763296008474] EXIT  OpenCLManager::init_once (us=112587)
+[1763296008474] ENTER MassiveFloodFillGPU
+[1763296008654] GPU-PVS: Geometric Occlusion CPU-Pass...
+[1763296009794] Geometric Occlusion CPU-PASS DONE.
+[1763296009794] Skipping HARD-HP PVS PRUNE for preset >= 2 (large maps)
+[1763296009794] Cluster merge pass...
+[1763296010788] GPU PVS propagation completed.
+[1763296010794] EXIT  MassiveFloodFillGPU (us=2320060)

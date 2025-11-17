@@ -1,0 +1,3 @@
+﻿#include "resource.h"
+
+IDR_FSSTDIO  RCDATA  "filesystem_stdio.dll"

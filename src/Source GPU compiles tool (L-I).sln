@@ -1,0 +1,84 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "fgdlib", "fgdlib\fgdlib_win64.vcxproj", "{C663E37A-E7E6-842D-215D-5819CF9A9E46}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "mathlib", "mathlib\mathlib_win64.vcxproj", "{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Raytrace", "raytrace\raytrace_win64.vcxproj", "{A044B9B3-572B-23D3-5476-077522D12335}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "tier1", "tier1\tier1_win64.vcxproj", "{ABFCC7A6-84D6-E359-05BF-BDC09C31002D}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VBSP", "utils\vbsp\vbsp_win64.vcxproj", "{0F0366B9-C669-EADC-A8A7-9E347543FDED}"
+	ProjectSection(ProjectDependencies) = postProject
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D} = {ABFCC7A6-84D6-E359-05BF-BDC09C31002D}
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085} = {B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}
+		{C663E37A-E7E6-842D-215D-5819CF9A9E46} = {C663E37A-E7E6-842D-215D-5819CF9A9E46}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VRAD", "utils\vrad\vrad_dll_win64.vcxproj", "{0FE281EF-67EC-4F7B-5F99-99CEC90C48EF}"
+	ProjectSection(ProjectDependencies) = postProject
+		{A044B9B3-572B-23D3-5476-077522D12335} = {A044B9B3-572B-23D3-5476-077522D12335}
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D} = {ABFCC7A6-84D6-E359-05BF-BDC09C31002D}
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085} = {B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VRAD (Launcher)", "utils\vrad_launcher\vrad_launcher_win64.vcxproj", "{4CCFB3DD-92DF-F02E-A30F-BF9E6E4E7CA1}"
+	ProjectSection(ProjectDependencies) = postProject
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D} = {ABFCC7A6-84D6-E359-05BF-BDC09C31002D}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vvis_GPU", "utils\vvis\vvis_dll_win64.vcxproj", "{ECB8B679-3CDD-8136-F54C-E23F014C6D10}"
+	ProjectSection(ProjectDependencies) = postProject
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D} = {ABFCC7A6-84D6-E359-05BF-BDC09C31002D}
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085} = {B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|win64 = Debug|win64
+		Release|win64 = Release|win64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C663E37A-E7E6-842D-215D-5819CF9A9E46}.Debug|win64.ActiveCfg = Debug|x64
+		{C663E37A-E7E6-842D-215D-5819CF9A9E46}.Debug|win64.Build.0 = Debug|x64
+		{C663E37A-E7E6-842D-215D-5819CF9A9E46}.Release|win64.ActiveCfg = Release|x64
+		{C663E37A-E7E6-842D-215D-5819CF9A9E46}.Release|win64.Build.0 = Release|x64
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}.Debug|win64.ActiveCfg = Debug|x64
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}.Debug|win64.Build.0 = Debug|x64
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}.Release|win64.ActiveCfg = Release|x64
+		{B3B0E171-C7B1-7BE0-4D0E-2F4B370C6085}.Release|win64.Build.0 = Release|x64
+		{A044B9B3-572B-23D3-5476-077522D12335}.Debug|win64.ActiveCfg = Debug|x64
+		{A044B9B3-572B-23D3-5476-077522D12335}.Debug|win64.Build.0 = Debug|x64
+		{A044B9B3-572B-23D3-5476-077522D12335}.Release|win64.ActiveCfg = Release|x64
+		{A044B9B3-572B-23D3-5476-077522D12335}.Release|win64.Build.0 = Release|x64
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D}.Debug|win64.ActiveCfg = Debug|x64
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D}.Debug|win64.Build.0 = Debug|x64
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D}.Release|win64.ActiveCfg = Release|x64
+		{ABFCC7A6-84D6-E359-05BF-BDC09C31002D}.Release|win64.Build.0 = Release|x64
+		{0F0366B9-C669-EADC-A8A7-9E347543FDED}.Debug|win64.ActiveCfg = Debug|x64
+		{0F0366B9-C669-EADC-A8A7-9E347543FDED}.Debug|win64.Build.0 = Debug|x64
+		{0F0366B9-C669-EADC-A8A7-9E347543FDED}.Release|win64.ActiveCfg = Release|x64
+		{0F0366B9-C669-EADC-A8A7-9E347543FDED}.Release|win64.Build.0 = Release|x64
+		{0FE281EF-67EC-4F7B-5F99-99CEC90C48EF}.Debug|win64.ActiveCfg = Debug|x64
+		{0FE281EF-67EC-4F7B-5F99-99CEC90C48EF}.Debug|win64.Build.0 = Debug|x64
+		{0FE281EF-67EC-4F7B-5F99-99CEC90C48EF}.Release|win64.ActiveCfg = Release|x64
+		{0FE281EF-67EC-4F7B-5F99-99CEC90C48EF}.Release|win64.Build.0 = Release|x64
+		{4CCFB3DD-92DF-F02E-A30F-BF9E6E4E7CA1}.Debug|win64.ActiveCfg = Debug|x64
+		{4CCFB3DD-92DF-F02E-A30F-BF9E6E4E7CA1}.Debug|win64.Build.0 = Debug|x64
+		{4CCFB3DD-92DF-F02E-A30F-BF9E6E4E7CA1}.Release|win64.ActiveCfg = Release|x64
+		{4CCFB3DD-92DF-F02E-A30F-BF9E6E4E7CA1}.Release|win64.Build.0 = Release|x64
+		{ECB8B679-3CDD-8136-F54C-E23F014C6D10}.Debug|win64.ActiveCfg = Debug|x64
+		{ECB8B679-3CDD-8136-F54C-E23F014C6D10}.Debug|win64.Build.0 = Debug|x64
+		{ECB8B679-3CDD-8136-F54C-E23F014C6D10}.Release|win64.ActiveCfg = Release|x64
+		{ECB8B679-3CDD-8136-F54C-E23F014C6D10}.Release|win64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {68052AF4-817E-47AE-9236-0F24DF4488E6}
+	EndGlobalSection
+EndGlobal

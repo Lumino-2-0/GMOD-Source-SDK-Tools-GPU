@@ -14,6 +14,11 @@ struct cl_plane_t {
     float dist;
 };
 
+struct cl_leafportal_t {
+    int leaf;
+    int portal;
+};
+
 struct cl_winding_t {
     int numpoints;
     float points[16][3]; // MAX_POINTS_ON_FIXED_WINDING = 16
@@ -47,7 +52,12 @@ struct OpenCLManager {
     cl_kernel angle_kernel = nullptr;
     cl_kernel convexity_kernel = nullptr;
     cl_kernel frustum_kernel = nullptr;
-
+    cl_kernel distance_prune_kernel = nullptr;
+    cl_kernel opposite_prune_kernel = nullptr;
+    cl_kernel sector_prune_kernel = nullptr;
+    cl_kernel z_occlusion_kernel = nullptr;
+    cl_kernel solid_angle_kernel = nullptr;
+    cl_kernel pyramid_sector_kernel = nullptr;
     // prune buffers
     cl_mem buf_portal_origin = nullptr;
     cl_mem buf_portal_normal = nullptr;
@@ -60,8 +70,18 @@ struct OpenCLManager {
     void init_once();
     void cleanup();
 
+    // NEW: leaf-based propagation kernel
+    cl_kernel leaf_kernel = nullptr;
+
+    // NEW: GPU buffers for leaf propagation
+    cl_mem buf_leaf_first = nullptr;
+    cl_mem buf_leaf_count = nullptr;
+    cl_mem buf_leaf_portals = nullptr;
+    cl_mem buf_portal_leaf = nullptr;
 
 };
+
+
 
 extern int g_gpuPreset;
 
