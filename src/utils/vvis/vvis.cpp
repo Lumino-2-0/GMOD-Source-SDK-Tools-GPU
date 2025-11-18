@@ -256,7 +256,7 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 			}
 		}
 	}
-	int numbytes = CompressVis( uncompressed, compressed );
+	int numbytes = SuperCompressVis( uncompressed, compressed );
 
 	byte *dest = vismap_p;
 	vismap_p += numbytes;

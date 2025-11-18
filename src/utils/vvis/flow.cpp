@@ -1667,6 +1667,54 @@ void GPU_CPU_SampleCompare()
 			Msg("[GPU Test] portail %6d : MISMATCH (premier mot diff = %d) GPUbits=%llu CPUbits=%llu\n",
 				idx, first_diff_word, (unsigned long long)gpuCount, (unsigned long long)cpuCount);
 
+			// ============================================================
+// TRYGPU PRO — DETAILS ÉTENDUS
+// ============================================================
+
+// Leaf source
+			int leaf_src = portals[p].leaf;
+
+			// Liste des leafs visibles CPU/GPU
+			std::vector<int> cpuLeafs;
+			std::vector<int> gpuLeafs;
+
+			for (int L = 0; L < leafclusters; ++L)
+			{
+				if (cpu_bits[L >> 5] & (1u << (L & 31))) cpuLeafs.push_back(L);
+				if (gpu_bits[L >> 5] & (1u << (L & 31))) gpuLeafs.push_back(L);
+			}
+
+			printf("    >> Leaf source           : %d\n", leaf_src);
+			printf("    >> Leaf visible CPU (%d) : ", (int)cpuLeafs.size());
+			for (int L : cpuLeafs) printf("%d ", L);
+			printf("\n");
+
+			printf("    >> Leaf visible GPU (%d) : ", (int)gpuLeafs.size());
+			for (int L : gpuLeafs) printf("%d ", L);
+			printf("\n");
+
+			// Mismatch par portail
+			for (int Pmiss = 0; Pmiss < numportals; ++Pmiss)
+			{
+				bool c = CheckBit(cpu_bits, Pmiss);
+				bool g = CheckBit(gpu_bits, Pmiss);
+
+				if (c != g)
+				{
+					float3 A = portal_origin[p];
+					float3 B = portal_origin[Pmiss];
+
+					float dx = B.x - A.x;
+					float dy = B.y - A.y;
+					float dz = B.z - A.z;
+
+					float dist = sqrt(dx * dx + dy * dy + dz * dz);
+
+					printf("    >> Diff portal %d  (CPU=%d GPU=%d)  dist=%.1f\n",
+						Pmiss, (int)c, (int)g, dist);
+				}
+			}
+
 			// Dump binaire pour analyse (GPU, CPU, portalflood)
 			char fname[256];
 			snprintf(fname, sizeof(fname), "pvis_gpu_%d.bin", idx);
@@ -1708,6 +1756,7 @@ void GPU_CPU_SampleCompare()
 			break;
 		}
 	}
+
 
 	Msg("[GPU Test] Comparaison terminee : %d mismatches sur %d vérifiés\n", mismatches, checked);
 	Msg("[GPU Test] Bits totaux (GPU=%llu CPU=%llu)\n", (unsigned long long)totalBitsGPU, (unsigned long long)totalBitsCPU);

@@ -286,6 +286,7 @@ int					TexDataStringTable_AddOrFindString( const char *pString );
 
 void	DecompressVis (byte *in, byte *decompressed);
 int		CompressVis (byte *vis, byte *dest);
+int     SuperCompressVis(byte* vis, byte* dest);
 
 void	OpenBSPFile( const char *filename );
 void	CloseBSPFile(void);

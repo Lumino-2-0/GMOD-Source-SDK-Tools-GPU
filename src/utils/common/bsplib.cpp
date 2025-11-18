@@ -28,7 +28,7 @@
 #include "vtf/vtf.h"
 #include "lzma/lzma.h"
 #include "tier1/lzmaDecoder.h"
-
+#include "lz4.h"
 #include "tier0/memdbgon.h"
 
 //=============================================================================
@@ -1427,6 +1427,14 @@ static void LoadOcclusionLump()
 		Error("Unknown occlusion lump version!\n");
 		break;
 	}
+}
+
+
+int SuperCompressVis(uint8_t* in, int insize, uint8_t* out)
+{
+	int maxSize = insize * 2;
+	int comp = LZ4_compress_default((char*)in, (char*)out, insize, maxSize);
+	return comp;
 }
 
 
