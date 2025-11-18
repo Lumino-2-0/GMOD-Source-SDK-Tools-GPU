@@ -1,4 +1,7 @@
 # Source SDK 2013 — Outils GMOD (Optimisés 64-bit)
+## Ce projet est en cours de développement, mais l'optimisation GPU/OpenCL est presque fonctionnelle !
+Ça y est, j'ai créé une version GPU de l'outil VVIS spécialement pour GMOD. Elle utilise OpenCL pour la compatibilité GPU, et pour une grande carte ouverte comme ma Kindercity (une grande ville avec beaucoup d'éléments à l'intérieur), la compilation avec ma carte graphique (RTX 4090) n'a pris que 2 secondes. Alors, essayez-la et profitez de cette fonctionnalité ! Je comparerai de nombreuses cartes avec la version originale de VVIS et ma version GPU pour identifier les différences et les points à optimiser. Mais pour l'instant, ça fonctionne, et le plus dur est fait. Ne vous emballez pas trop vite, car comme je l'ai dit, c'est PRESQUE terminé, mais pas encore tout à fait. Il vous faudra donc patienter plusieurs semaines, voire des mois, ou bien me donner un coup de main :)
+
 
 Code source du **Source SDK 2013 GMOD (64 bits)** — outils VBSP, VVIS et VRAD personnalisés et optimisés, visant principalement à l'expérimentation, aux tests de performance et à l’intégration GPU via **OpenCL**.
 
@@ -19,12 +22,12 @@ Il documente les expérimentations, les optimisations et démontre ce qui est po
 ## État actuel
 
 ### VVIS_GPU (OpenCL)
-La version GPU de **VVIS** est **actuellement en pause**.  
+La version GPU de **VVIS** est **actuellement en developppement**.  
 Avec la sortie de **[VVIS++ et autres outils de Ficool2](https://ficool2.github.io/HammerPlusPlus-Website/tools.html)**, les calculs CPU sont déjà très optimisés.  
 Le développement OpenCL reste une **expérimentation** et pourra être repris plus tard pour des tests hybrides CPU/GPU.
 
 ### VRAD
-Travail en cours sur **VRAD** :
+**Travail en cours** sur *VRAD* :
 - Nouveau système de **verbose** avec logs dans un fichier séparé.
 - Options supplémentaires en ligne de commande pour le débogage et l’analyse d’éclairage.
 - Expérimentations potentielles sur le calcul d’éclairage indirect GPU.
