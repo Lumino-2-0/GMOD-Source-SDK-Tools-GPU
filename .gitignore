@@ -10,6 +10,13 @@
 *.gch
 *.pch
 
+*.ipch
+*.log
+*.bin
+*.vpc
+*.vpc_cache
+*.db
+
 # Compiled Dynamic libraries
 *.so
 *.dylib
