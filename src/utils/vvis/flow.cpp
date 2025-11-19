@@ -1668,10 +1668,10 @@ void GPU_CPU_SampleCompare()
 				idx, first_diff_word, (unsigned long long)gpuCount, (unsigned long long)cpuCount);
 
 			// ============================================================
-// TRYGPU PRO — DETAILS ÉTENDUS
-// ============================================================
+			// TRYGPU PRO — DETAILS ÉTENDUS
+			// ============================================================
 
-// Leaf source
+			// Leaf source
 			int leaf_src = portals[p].leaf;
 
 			// Liste des leafs visibles CPU/GPU

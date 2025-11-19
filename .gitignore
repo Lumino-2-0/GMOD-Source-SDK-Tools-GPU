@@ -16,6 +16,14 @@
 *.vpc
 *.vpc_cache
 *.db
+*.db-shm
+*.db-wal
+*.vsidx
+*.json
+*.cache
+*.opendb
+*.suo
+
 
 # Compiled Dynamic libraries
 *.so
