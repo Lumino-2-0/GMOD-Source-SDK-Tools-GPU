@@ -1078,6 +1078,17 @@ void MassiveFloodFillGPU()
 	const size_t totalWords = (size_t)numportals * portallongs;
 
 	// ============================================================
+	// SAFETY FIX 1 — Ensure all portals have portalvis allocated
+	// ============================================================
+	for (int p = 0; p < numportals; ++p)
+	{
+		if (!portals[p].portalvis)
+		{
+			portals[p].portalvis = (byte*)calloc(portallongs, sizeof(uint));
+		}
+	}
+
+	// ============================================================
 	// Build flat arrays
 	// ============================================================
 	std::vector<uint> portalflood_flat(totalWords);
@@ -1568,15 +1579,13 @@ void MassiveFloodFillGPU()
 		portal_t* pa = &portals[P];
 		int Lsrc = pa->leaf;
 
-
-
-		// Réinitialiser le portalvis
-		if (!pa->portalvis) {
-			pa->portalvis = (byte*)malloc(portalbytes);
+		// SAFETY FIX 2 — invalid leaf index
+		if (Lsrc < 0 || Lsrc >= leafclusters)
+		{
+			memset(pa->portalvis, 0, portallongs * sizeof(uint));
+			continue;
 		}
-		memset(pa->portalvis, 0, portalbytes);
 
-		// LeafVis GPU du leaf source
 		uint32_t* leafbm = &leafvis_flat[Lsrc * leaflongs];
 
 		// Pour chaque leaf visible depuis Lsrc
@@ -1588,20 +1597,27 @@ void MassiveFloodFillGPU()
 			int first = leaf_first[Ldst];
 			int count = leaf_count[Ldst];
 
-			// SAFE GUARD : skip leafs without portals
-			if (count <= 0) continue;
+			// SAFETY FIX 3 — avoid invalid ranges
+			if (count <= 0)
+				continue;
 
-			// SAFE GUARD : avoid overflow
 			if (first < 0 || first + count >(int)leaf_portals.size())
 			{
-				printf("[GPU-WARN] leaf %d has invalid portal list (first=%d count=%d size=%d)\n",
-					Ldst, first, count, (int)leaf_portals.size());
+				printf("[GPU-WARN] Invalid leaf_portals for leaf %d (first=%d count=%d size=%zu)\n",
+					Ldst, first, count, leaf_portals.size());
 				continue;
 			}
 
 			for (int k = 0; k < count; ++k)
 			{
 				int Pdst = leaf_portals[first + k];
+
+				// extra safety : portal must exist
+				if (Pdst < 0 || Pdst >= numportals)
+				{
+					printf("[GPU-WARN] Invalid Pdst=%d for leaf %d\n", Pdst, Ldst);
+					continue;
+				}
 
 				// SAFE GUARD : portal index must exist
 				if (Pdst < 0 || Pdst >= numportals)
@@ -1672,21 +1688,22 @@ void GPU_CPU_SampleCompare()
 	uint64_t totalBitsGPU = 0;
 	uint64_t totalBitsCPU = 0;
 
-	for (int s = 0, idx = 0; s < sampleCount; ++s, idx += stride) {
-		if (idx >= numportals) idx = numportals - 1;
+	for (int s = 0, idx = 0; s < sampleCount; ++s) {
+		if (idx >= numportals) break; // SAFETY FIX
+
+		idx += stride;
 
 		portal_t* p = &portals[idx];
 		if (!p) {
 			Msg("[GPU Test] portail %d introuvable\n", idx);
 			continue;
 		}
+		// SAFETY FIX — ensure portalvis & portalflood always exist
 		if (!p->portalvis) {
-			Msg("[GPU Test] portail %d : portalvis non alloue — ignorer\n", idx);
-			continue;
+			p->portalvis = (byte*)calloc(portallongs, sizeof(uint32_t));
 		}
 		if (!p->portalflood) {
-			Msg("[GPU Test] portail %d : portalflood non alloue — ignorer\n", idx);
-			continue;
+			p->portalflood = (byte*)calloc(portallongs, sizeof(uint32_t));
 		}
 
 		// Lire GPU bits (tel que stocké après MassiveFloodFillGPU)
@@ -1709,20 +1726,13 @@ void GPU_CPU_SampleCompare()
 			return (words[word] & (1u << (bit & 31))) != 0;
 			};
 
-		// Trouver l'indice dans sorted_portals correspondant à &portals[idx]
-		int sortedIndex = -1;
-		for (int si = 0; si < g_numportals * 2; ++si) {
-			if (sorted_portals[si] == &portals[idx]) { sortedIndex = si; break; }
-		}
-		if (sortedIndex == -1) {
-			Msg("[GPU Test] portail %d : introuvable dans sorted_portals, ignorer\n", idx);
-			continue;
-		}
+		// Sans sorted_portals : utiliser directement portals[idx]
+		int sortedIndex = idx;
 
-		// Sauvegarder une copie GPU avant d'appeler PortalFlow (PortalFlow peut écrire p->portalvis)
+		// Sauvegarder une copie GPU avant d'appeler PortalFlow_CPU
 		std::vector<uint32_t> gpu_before = gpu_bits;
 
-		// Calcul CPU local pour ce portail (appelant PortalFlow_CPU)
+		// Calcul CPU local pour ce portail (version directe)
 		PortalFlow_CPU(0, sortedIndex);
 
 		// Lire CPU bits (après PortalFlow)
@@ -1846,6 +1856,8 @@ void GPU_CPU_SampleCompare()
 			Msg("[GPU Test] Trop de mismatches (%d) - arrêt precoce du test\n", mismatches);
 			break;
 		}
+
+
 	}
 
 
@@ -2532,7 +2544,7 @@ void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstac
 void PortalFlow(int iThread, int portalnum)
 {
 	// Recuperation du portail courant (attention : sorted_portals !)
-	portal_t* p = sorted_portals[portalnum];
+	portal_t* p = &portals[portalnum];
 
 	// Si portalvis non alloue (cas où GPU/host n'a pas encore rempli),
 	// on le recouvre temporairement par portalflood pour éviter erreurs en aval.
@@ -2562,7 +2574,7 @@ void PortalFlow_CPU(int iThread, int portalnum)
 	portal_t* p;
 	int c_might, c_can;
 
-	p = sorted_portals[portalnum];
+	p = &portals[portalnum];
 	p->status = stat_working;
 
 	c_might = CountBits(p->portalflood, g_numportals * 2);

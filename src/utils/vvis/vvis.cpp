@@ -138,16 +138,11 @@ void BuildTracePortals( int clusterStart )
 	}
 }
 
-void SortPortals (void)
+void SortPortals(void)
 {
-	int		i;
-	
-	for (i=0 ; i<g_numportals*2 ; i++)
+	// GPU version — disable CPU sorting entirely
+	for (int i = 0; i < g_numportals * 2; i++)
 		sorted_portals[i] = &portals[i];
-
-	if (nosort)
-		return;
-	qsort (sorted_portals, g_numportals*2, sizeof(sorted_portals[0]), PComp);
 }
 
 
@@ -256,17 +251,32 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 			}
 		}
 	}
-	int numbytes = CompressVis( uncompressed, compressed );
 
-	byte *dest = vismap_p;
-	vismap_p += numbytes;
-	
-	if (vismap_p > vismap_end)
-		Error ("Vismap expansion overflow");
+	int numbytes = CompressVis(uncompressed, compressed);
 
-	dvis->bitofs[clusternum][DVIS_PVS] = dest-vismap;
+	// SAFETY FIX — clamp output
+	if (numbytes <= 0 || numbytes > MAX_MAP_LEAFS / 8)
+	{
+		Warning("CompressVis returned invalid size %d for cluster %d — forcing safe size\n",
+			numbytes, clusternum);
+		numbytes = MAX_MAP_LEAFS / 8;
+	}
 
-	memcpy( dest, compressed, numbytes );
+	// SAFETY FIX — avoid writing past vismap
+	byte* dest = vismap_p;
+	if (dest + numbytes > vismap_end)
+	{
+		Error("Vismap overflow on cluster %d (dest=%p size=%d)\n",
+			clusternum, dest, numbytes);
+	}
+
+	dvis->bitofs[clusternum][DVIS_PVS] = dest - vismap;
+
+	// write data safely
+	memcpy(dest, compressed, numbytes);
+
+	// advance output pointer
+	vismap_p = dest + numbytes;
 
 	// check vis data
 	byte verify[MAX_MAP_LEAFS / 8];
@@ -514,6 +524,8 @@ void LoadPortals (char *name)
 	leaflongs = (leafbytes + (int)sizeof(long) - 1) / (int)sizeof(long); // rounds up to whole long words
 
 	portalbytes = ((g_numportals * 2 + 7) >> 3);        // ceil((numportals*2) / 8)
+
+
 	portallongs = (portalbytes + (int)sizeof(long) - 1) / (int)sizeof(long);
 
 // each file portal is split into two memory portals
