@@ -78,6 +78,8 @@ struct OpenCLManager {
     cl_mem buf_leaf_count = nullptr;
     cl_mem buf_leaf_portals = nullptr;
     cl_mem buf_portal_leaf = nullptr;
+    cl_mem buf_leafvis = nullptr;
+
 
 };
 

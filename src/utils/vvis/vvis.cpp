@@ -256,7 +256,7 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 			}
 		}
 	}
-	int numbytes = SuperCompressVis( uncompressed, compressed );
+	int numbytes = CompressVis( uncompressed, compressed );
 
 	byte *dest = vismap_p;
 	vismap_p += numbytes;
@@ -339,6 +339,10 @@ void CalcPortalVis() {
 			RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
 		}
 		else {
+			for (int i = 0; i < g_numportals * 2; ++i)
+			{
+				BasePortalVis(0, i);
+			}
 			MassiveFloodFillGPU();
 			// Optionnel : échantillonnage CPU vs GPU pour vérification
 			if (g_bTryGPU) {

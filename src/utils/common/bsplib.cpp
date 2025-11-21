@@ -15,7 +15,6 @@
 #include "bsptreedata.h"
 #include "cmodel.h"
 #include "gamebspfile.h"
-#include "materialsystem/imaterial.h"
 #include "materialsystem/hardwareverts.h"
 #include "utlbuffer.h"
 #include "utlrbtree.h"
@@ -25,11 +24,8 @@
 #include "physdll.h"
 #include "tier0/dbg.h"
 #include "lumpfiles.h"
-#include "vtf/vtf.h"
 #include "lzma/lzma.h"
 #include "tier1/lzmaDecoder.h"
-#include "lz4.h"
-#include "tier0/memdbgon.h"
 
 //=============================================================================
 
@@ -1427,14 +1423,6 @@ static void LoadOcclusionLump()
 		Error("Unknown occlusion lump version!\n");
 		break;
 	}
-}
-
-
-int SuperCompressVis(uint8_t* in, int insize, uint8_t* out)
-{
-	int maxSize = insize * 2;
-	int comp = LZ4_compress_default((char*)in, (char*)out, insize, maxSize);
-	return comp;
 }
 
 
