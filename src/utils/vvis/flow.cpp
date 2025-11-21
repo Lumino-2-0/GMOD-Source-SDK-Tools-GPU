@@ -1239,15 +1239,9 @@ void MassiveFloodFillGPU()
 	clSetKernelArg(g_clManager.frustum_kernel, 4, sizeof(int), &portallongs);
 
 	// ============================================================
-	// Kernel handles
-	// ============================================================
-	cl_kernel kernel = g_clManager.floodfill_kernel;
-
-	size_t globalSize = numportals;
-
-	// ============================================================
-	// BFS PROPAGATION (CPU loop driving GPU)
-	// ============================================================
+        // ============================================================
+        // BFS PROPAGATION (CPU loop driving GPU)
+        // ============================================================
 	// Nombre réel de clusters (leafs)
 	// Nombre réel de leafs
 	const int leafclusters = portalclusters;
@@ -1262,14 +1256,11 @@ void MassiveFloodFillGPU()
 	const size_t leafvis_size_bytes = (size_t)leafclusters * leaflongs * sizeof(uint32_t);
 
 	// Alloue les bitfields CPU
-	std::vector<uint32_t> leafvis_flat;
-	std::vector<uint32_t> next_leafvis_flat;
+        std::vector<uint32_t> leafvis_flat;
 
-	leafvis_flat.resize((size_t)leafclusters* leaflongs);
-	next_leafvis_flat.resize((size_t)leafclusters* leaflongs);
+        leafvis_flat.resize((size_t)leafclusters* leaflongs);
 
-	std::fill(leafvis_flat.begin(), leafvis_flat.end(), 0u);
-	std::fill(next_leafvis_flat.begin(), next_leafvis_flat.end(), 0u);
+        std::fill(leafvis_flat.begin(), leafvis_flat.end(), 0u);
 
 	// Initial state: each leaf sees itself
 	for (int L = 0; L < leafclusters; ++L)
@@ -1278,21 +1269,16 @@ void MassiveFloodFillGPU()
 	}
 
 	// GPU buffers
-	cl_mem d_leafvis = clCreateBuffer(
-		g_clManager.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		leafvis_size_bytes,
-		leafvis_flat.data(),
-		&err
-	);
+        cl_mem d_leafvis = clCreateBuffer(
+                g_clManager.context,
+                CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                leafvis_size_bytes,
+                leafvis_flat.data(),
+                &err
+        );
 
-	cl_mem d_next_leafvis = clCreateBuffer(
-		g_clManager.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		leafvis_size_bytes,
-		next_leafvis_flat.data(),
-		&err
-	);
+        // Conserver un pointeur global pour la lecture finale (evite nullptr)
+        g_clManager.buf_leafvis = d_leafvis;
 
 	// Loop until convergence
 	int changed = 1;
@@ -1326,8 +1312,9 @@ void MassiveFloodFillGPU()
 		clSetKernelArg(g_clManager.leaf_kernel, 2, sizeof(cl_mem), &g_clManager.buf_leaf_count);
 		clSetKernelArg(g_clManager.leaf_kernel, 3, sizeof(cl_mem), &g_clManager.buf_leaf_portals);
 		clSetKernelArg(g_clManager.leaf_kernel, 4, sizeof(cl_mem), &g_clManager.buf_portal_leaf);
-		clSetKernelArg(g_clManager.leaf_kernel, 5, sizeof(cl_mem), &d_leafvis);
-		clSetKernelArg(g_clManager.leaf_kernel, 6, sizeof(cl_mem), &d_next_leafvis);
+                clSetKernelArg(g_clManager.leaf_kernel, 5, sizeof(cl_mem), &d_leafvis);
+                // kernel ecrit en place dans d_leafvis : passer le meme buffer pour next_visleaf
+                clSetKernelArg(g_clManager.leaf_kernel, 6, sizeof(cl_mem), &d_leafvis);
 		clSetKernelArg(g_clManager.leaf_kernel, 7, sizeof(cl_mem), &d_changed_leaf);
 		clSetKernelArg(g_clManager.leaf_kernel, 8, sizeof(int), &leafclusters);
 		clSetKernelArg(g_clManager.leaf_kernel, 9, sizeof(int), &leaflongs);
@@ -1406,23 +1393,9 @@ void MassiveFloodFillGPU()
 			nullptr
 		);
 
-		// Swap buffers
-		std::swap(d_leafvis, d_next_leafvis);
-
-		// IMPORTANT : clear next buffer for next iteration
-		uint32_t zeroVal = 0;
-		clEnqueueFillBuffer(
-			g_clManager.queue,
-			d_next_leafvis,
-			&zeroVal,
-			sizeof(uint32_t),
-			0,
-			leafvis_size_bytes,
-			0,
-			nullptr,
-			nullptr
-		);
-		clFinish(g_clManager.queue);
+                // Pas d'echange de buffers : la propagation se fait en place et
+                // on conserve d_leafvis intact pour la lecture finale.
+                clFinish(g_clManager.queue);
 	}
 	// ============================================================
 	// Copy back final GPU result
