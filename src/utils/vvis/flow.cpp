@@ -1588,9 +1588,33 @@ void MassiveFloodFillGPU()
 			int first = leaf_first[Ldst];
 			int count = leaf_count[Ldst];
 
+			// SAFE GUARD : skip leafs without portals
+			if (count <= 0) continue;
+
+			// SAFE GUARD : avoid overflow
+			if (first < 0 || first + count >(int)leaf_portals.size())
+			{
+				printf("[GPU-WARN] leaf %d has invalid portal list (first=%d count=%d size=%d)\n",
+					Ldst, first, count, (int)leaf_portals.size());
+				continue;
+			}
+
 			for (int k = 0; k < count; ++k)
 			{
 				int Pdst = leaf_portals[first + k];
+
+				// SAFE GUARD : portal index must exist
+				if (Pdst < 0 || Pdst >= numportals)
+				{
+					printf("[GPU-WARN] invalid Pdst=%d for leaf %d\n", Pdst, Ldst);
+					continue;
+				}
+
+				// Ensure destination portal visibility buffer exists
+				if (!portals[Pdst].portalvis)
+				{
+					portals[Pdst].portalvis = (byte*)calloc(1, portalbytes);
+				}
 
 				// Marquer le portail distant comme visible
 				SetBit(pa->portalvis, Pdst);
@@ -1677,6 +1701,14 @@ void GPU_CPU_SampleCompare()
 			flood_bits[w] = ((uint32_t*)p->portalflood)[w];
 		}
 
+		auto GetBitFromWords = [&](const std::vector<uint32_t>& words, int bit) -> bool {
+			int word = bit >> 5;
+			if (word < 0 || word >= (int)words.size()) {
+				return false;
+			}
+			return (words[word] & (1u << (bit & 31))) != 0;
+			};
+
 		// Trouver l'indice dans sorted_portals correspondant à &portals[idx]
 		int sortedIndex = -1;
 		for (int si = 0; si < g_numportals * 2; ++si) {
@@ -1731,7 +1763,7 @@ void GPU_CPU_SampleCompare()
 			// ============================================================
 
 			// Leaf source
-			int leaf_src = portals[(int)p].leaf;
+			int leaf_src = p->leaf;
 
 			// Liste des leafs visibles CPU/GPU
 			std::vector<int> cpuLeafs;
@@ -1739,8 +1771,8 @@ void GPU_CPU_SampleCompare()
 
 			for (int L = 0; L < portalclusters; ++L)
 			{
-				if (cpu_bits[L >> 5] & (1u << (L & 31))) cpuLeafs.push_back(L);
-				if (gpu_bits[L >> 5] & (1u << (L & 31))) gpuLeafs.push_back(L);
+				if (GetBitFromWords(cpu_bits, L)) cpuLeafs.push_back(L);
+				if (GetBitFromWords(gpu_bits, L)) gpuLeafs.push_back(L);
 			}
 
 			printf("    >> Leaf source           : %d\n", leaf_src);
@@ -1755,8 +1787,8 @@ void GPU_CPU_SampleCompare()
 			// Mismatch par portail
 			for (int Pmiss = 0; Pmiss < numportals; ++Pmiss)
 			{
-				bool c = CheckBit(cpu_bits, Pmiss);
-				bool g = CheckBit(gpu_bits, Pmiss);
+				bool c = GetBitFromWords(cpu_bits, Pmiss);
+				bool g = GetBitFromWords(gpu_bits, Pmiss);
 
 				if (c != g)
 				{
