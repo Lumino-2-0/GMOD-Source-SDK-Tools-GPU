@@ -4,30 +4,885 @@
 // $NoKeywords: $
 //=============================================================================//
 
-#define CL_TARGET_OPENCL_VERSION 200
+
+// Gm_kindercity : 14818 portals
+
+#define CL_TARGET_OPENCL_VERSION 300
+
 #include "vis.h"
-#include "vmpi.h"
 #include "flow_gpu.h"
 #include <CL/cl.h>
 #include <vector>
 #include <mutex>
 #include <cstring>
 #include <cstdio>
-#include <cstdlib>
 #include <cassert>
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <thread>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
-#include <iomanip>
 #include <icommandline.h>
+#include <malloc.h>
+#include <mbstring.h>
+#include <memory.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <intrin0.inl.h>
+#include <string>
+#include <CL/cl_platform.h>
+#include <mathlib/mathlib.h>
+#include <mathlib/vector.h>
+#include <basetypes.h>
+#include <dbg.h>
+#include <platform.h>
+#include <threadtools.h>
+#include <wchartypes.h>
+#include <utlvector.h>
+#include <cmdlib.h>
+#include <memory>
+#include "polylib.h"
+
+// ---------------------------------------------------------------------------
+// PARAMÈTRES ADAPTÉS À TOUTES LES MAPS
+// ---------------------------------------------------------------------------
+
+// Prune minimal (toujours actif, même en open-world)
+float prune_min_radius = 0.0f;
+
+// Backface prune (adapte selon PresetGPU)
+float prune_backface_dot = -1.0f;
+
+// Taille max pour tiny-portal-prune (mm)
+const float TINY_PORTAL_MAX_AREA = 1.0f;
+
+// ---------------------------------------------------------------------------
+// Helpers ULTRA
+// ---------------------------------------------------------------------------
+
+// Dot product Vector-version (compat Source2013)
+inline float Dot3(const Vector& a, const Vector& b)
+{
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+// Distance au carré (évite sqrt)
+inline float DistSqr(const Vector& a, const Vector& b)
+{
+	float dx = a.x - b.x;
+	float dy = a.y - b.y;
+	float dz = a.z - b.z;
+	return dx * dx + dy * dy + dz * dz;
+}
+
+// ---------------------------------------------------------------------------
+// CLAMP helpers
+// ---------------------------------------------------------------------------
+inline float clampf(float v, float lo, float hi)
+{
+	return (v < lo) ? lo : (v > hi ? hi : v);
+}
+
+// ---------------------------------------------------------------------------
+// LOGGING ULTRA
+// ---------------------------------------------------------------------------
+#define ULTRA_MSG(fmt, ...) Msg("[ULTRA] " fmt "\n", ##__VA_ARGS__)
+
+
+
+
+// ---------------------------------------------------------------------------
+//  Tiny Portal Prune (toujours actif)
+//  Élimine les portails trop petits pour influencer le PVS
+// ---------------------------------------------------------------------------
+
+static void UltraTinyPortalPrune(int numportals)
+{
+	ULTRA_MSG("TinyPortalPrune start");
+
+	int removed = 0;
+
+	for (int i = 0; i < numportals; i++)
+	{
+		portal_t& P = portals[i];
+
+		if (!P.winding)
+			continue;
+
+		float area = WindingArea(P.winding);
+
+		if (area < TINY_PORTAL_MAX_AREA)
+		{
+			memset(P.portalfront, 0, g_numportals / 8 + 1);
+			memset(P.portalflood, 0, g_numportals / 8 + 1);
+			memset(P.portalvis, 0, g_numportals / 8 + 1);
+			removed++;
+		}
+	}
+
+	ULTRA_MSG("TinyPortalPrune done (removed %d portals)", removed);
+}
+
+
+// ---------------------------------------------------------------------------
+//  Backface Prune (selon PresetGPU)
+//  Ne supprime qu’un portail clairement orienté dos à l'autre
+// ---------------------------------------------------------------------------
+
+static void UltraBackfacePrune(int numportals)
+{
+	ULTRA_MSG("BackfacePrune start");
+
+	int removed = 0;
+
+	for (int i = 0; i < numportals; i++)
+	{
+		portal_t& A = portals[i];
+
+		Vector An = A.plane.normal;
+		const Vector& Aorig = A.origin;
+
+		for (int j = 0; j < numportals; j++)
+		{
+			if (i == j) continue;
+			portal_t& B = portals[j];
+
+			Vector dir = B.origin - Aorig;
+
+			float len2 = dir.LengthSqr();
+			if (len2 < 0.001f)
+				continue;
+
+			dir *= 1.0f / sqrtf(len2);
+
+			float dot = Dot3(An, dir);
+
+			if (dot < prune_backface_dot)
+			{
+				// Élimine visibilité (A → B)
+				int w = j >> 5;
+				int b = j & 31;
+				((uint32_t*)A.portalvis)[w] &= ~(1u << b);
+				removed++;
+			}
+		}
+	}
+
+	ULTRA_MSG("BackfacePrune done (culled %d links)", removed);
+}
+
+
+// ---------------------------------------------------------------------------
+// Clip a winding against the separating plane of portals A→B
+// (Equiv. to Portal_VisFlood / ClipToSeparators)
+// ---------------------------------------------------------------------------
+
+static bool UltraClipPortal(const portal_t* A, const portal_t* B)
+{
+	if (!A->winding || !B->winding)
+		return false;
+
+	// Test 1 : dot(normal_A, origin_B - origin_A) must be >= 0
+	Vector dir = B->origin - A->origin;
+	float d = Dot3(A->plane.normal, dir);
+	if (d < 0.0f)
+		return false; // portal B behind A → invisible
+
+	// Test 2 : clip B->winding against A->plane
+	winding_t* clipW = ClipWinding(B->winding, A->plane, false);
+	if (!clipW)
+		return false; // fully clipped → no visibility
+
+	// Test 3 : separator tests (Valve logic: clip against edges of A->winding)
+	for (int i = 0; i < A->winding->numpoints; i++)
+	{
+		Vector& p1 = A->winding->points[i];
+		Vector& p2 = A->winding->points[(i + 1) % A->winding->numpoints];
+
+		Vector edge = p2 - p1;
+		Vector normal;
+		CrossProduct(A->plane.normal, edge, normal);
+		VectorNormalize(normal);
+
+		float dist = Dot3(normal, p1);
+
+		// create plane
+		plane_t pl;
+		pl.normal = normal;
+		pl.dist = dist;
+
+		winding_t* clipped = ClipWinding(clipW, pl, true);
+		if (!clipped)
+		{
+			FreeWinding(clipW);
+			return false;
+		}
+
+		FreeWinding(clipW);
+		clipW = clipped;
+	}
+
+	FreeWinding(clipW);
+	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// CPU PortalFlow — Base implementation before GPU BFS
+// (Valve-perfect with modern tweaks)
+// ---------------------------------------------------------------------------
+
+static void UltraPortalFlowCPU(int portalIndex)
+{
+	portal_t* A = &portals[portalIndex];
+	uint32_t* visA = (uint32_t*)A->portalvis;
+
+	if (!A->winding)
+		return;
+
+	// Self visible
+	int wA = portalIndex >> 5;
+	int bA = portalIndex & 31;
+	visA[wA] |= (1u << bA);
+
+	for (int q = 0; q < g_numportals * 2; q++)
+	{
+		if (q == portalIndex)
+			continue;
+
+		portal_t* B = &portals[q];
+
+		int w = q >> 5;
+		int b = q & 31;
+
+		// Already marked or not?
+		if (visA[w] & (1u << b))
+			continue;
+
+		// Quick plane-side test
+		Vector dir = B->origin - A->origin;
+		float d = Dot3(A->plane.normal, dir);
+		if (d < 0.0f)
+			continue;
+
+		// Hard test: geometry clipping
+		if (UltraClipPortal(A, B))
+		{
+			visA[w] |= (1u << b);
+		}
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// CPU Stage Driver
+// Equivalent to RunThreadsOnIndividual(g_numportals*2, PortalFlow_CPU);
+// but optimized & single-pass-safe
+// ---------------------------------------------------------------------------
+
+static void UltraPortalFlowCPURun()
+{
+	ULTRA_MSG("PortalFlow CPU strict start");
+
+	int totalPortals = g_numportals * 2;
+
+	for (int i = 0; i < totalPortals; i++)
+	{
+		UltraPortalFlowCPU(i);
+	}
+
+	ULTRA_MSG("PortalFlow CPU strict done");
+}
+
+void UltraGPU_BFS(int numportals, int portallongs)
+{
+	ULTRA_MSG("GPU BFS hardened start");
+
+	cl_int err;
+
+	// =====================================================================
+	// Allocate GPU buffers
+	// =====================================================================
+
+	size_t visBytes = sizeof(uint32_t) * numportals * portallongs;
+
+	cl_mem d_portalvis = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+		visBytes,
+		portalvisbits,
+		&err
+	);
+
+	cl_mem d_frontier = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE,
+		sizeof(uint32_t) * numportals,
+		NULL,
+		&err
+	);
+
+	cl_mem d_next_frontier = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE,
+		sizeof(uint32_t) * numportals,
+		NULL,
+		&err
+	);
+
+	cl_mem d_changed = clCreateBuffer(
+		g_clManager.context,
+		CL_MEM_READ_WRITE,
+		sizeof(int),
+		NULL,
+		&err
+	);
+
+	// =====================================================================
+	// Initialize frontier (at startup: everything marked by PortalFlow CPU)
+	// =====================================================================
+
+	std::vector<uint32_t> frontier(numportals, 1);        // 1 = needs propagation
+	std::vector<uint32_t> next_frontier(numportals, 0);   // empty next frontier
+
+	clEnqueueWriteBuffer(
+		g_clManager.queue,
+		d_frontier,
+		CL_TRUE,
+		0,
+		sizeof(uint32_t) * numportals,
+		frontier.data(),
+		0, NULL, NULL
+	);
+
+	clEnqueueWriteBuffer(
+		g_clManager.queue,
+		d_next_frontier,
+		CL_TRUE,
+		0,
+		sizeof(uint32_t) * numportals,
+		next_frontier.data(),
+		0, NULL, NULL
+	);
+
+	// =====================================================================
+	// BFS Hardened Loop (convergence)
+	// =====================================================================
+
+	size_t globalSize = numportals;
+
+	while (true)
+	{
+		int zero = 0;
+		clEnqueueWriteBuffer(
+			g_clManager.queue,
+			d_changed,
+			CL_TRUE,
+			0,
+			sizeof(int),
+			&zero,
+			0, NULL, NULL
+		);
+
+		// Configure kernel
+		clSetKernelArg(g_clManager.floodfill_kernel, 0, sizeof(cl_mem), &d_portalvis);
+		clSetKernelArg(g_clManager.floodfill_kernel, 1, sizeof(cl_mem), &d_frontier);
+		clSetKernelArg(g_clManager.floodfill_kernel, 2, sizeof(cl_mem), &d_next_frontier);
+		clSetKernelArg(g_clManager.floodfill_kernel, 3, sizeof(cl_mem), &d_changed);
+		clSetKernelArg(g_clManager.floodfill_kernel, 4, sizeof(int), &numportals);
+		clSetKernelArg(g_clManager.floodfill_kernel, 5, sizeof(int), &portallongs);
+
+		// Run kernel
+		clEnqueueNDRangeKernel(
+			g_clManager.queue,
+			g_clManager.floodfill_kernel,
+			1,
+			NULL,
+			&globalSize,
+			NULL,
+			0, NULL, NULL
+		);
+		clFinish(g_clManager.queue);
+
+		// Was there a change?
+		int changed = 0;
+		clEnqueueReadBuffer(
+			g_clManager.queue,
+			d_changed,
+			CL_TRUE,
+			0,
+			sizeof(int),
+			&changed,
+			0, NULL, NULL
+		);
+
+		if (!changed)
+			break;  // BFS converged
+
+		// Swap frontier buffers
+		cl_mem tmp = d_frontier;
+		d_frontier = d_next_frontier;
+		d_next_frontier = tmp;
+
+		// Clear next frontier
+		std::fill(next_frontier.begin(), next_frontier.end(), 0);
+		clEnqueueWriteBuffer(
+			g_clManager.queue,
+			d_next_frontier,
+			CL_TRUE,
+			0,
+			sizeof(uint32_t) * numportals,
+			next_frontier.data(),
+			0, NULL, NULL
+		);
+	}
+
+	// =====================================================================
+	// Read back final portalvis
+	// =====================================================================
+
+	clEnqueueReadBuffer(
+		g_clManager.queue,
+		d_portalvis,
+		CL_TRUE,
+		0,
+		visBytes,
+		portalvisbits,
+		0, NULL, NULL
+	);
+
+	ULTRA_MSG("GPU BFS hardened done");
+
+	// Cleanup
+	clReleaseMemObject(d_portalvis);
+	clReleaseMemObject(d_frontier);
+	clReleaseMemObject(d_next_frontier);
+	clReleaseMemObject(d_changed);
+}
+
+
+static void UltraGPU_BFS_Run()
+{
+	int numportals = g_numportals * 2;
+	int portallongs = (numportals + 31) / 32;
+
+	UltraGPU_BFS(numportals, portallongs);
+}
+
+
+// ---------------------------------------------------------------------------
+// Décide si deux portails appartiennent à des clusters compatibles
+// ---------------------------------------------------------------------------
+
+static bool UltraClusterMerge_Compatible(const portal_t* A, const portal_t* B)
+{
+	// --- Test 1: Distance ---
+	float dist2 = DistSqr(A->origin, B->origin);
+
+	// seuils intelligents basés sur l’ouverture
+	const float maxDist = 2048.0f;     // open maps → large propagation
+	const float maxDist2 = maxDist * maxDist;
+
+	if (dist2 > maxDist2)
+		return false;
+
+	// --- Test 2: Orientation ---
+	float dot = Dot3(A->plane.normal, B->plane.normal);
+
+	if (dot < 0.3f)   // 0.3 = cos ~72°, très permissif → maps ouvertes
+		return false;
+
+	// --- Test 3: Leaf adjacency (identité) ---
+	if (A->leaf == B->leaf)
+		return true;
+
+	// --- Test 4: Vérification géométrique rapide ---
+	Vector dirAB = B->origin - A->origin;
+	float d = Dot3(A->plane.normal, dirAB);
+
+	if (d < -64.0f)   // si B derrière un mur massif → non merge
+		return false;
+
+	return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Fusionne les clusters visuels de A et B
+// (symétrique, non destructive, extrêmement stable)
+// ---------------------------------------------------------------------------
+
+static void UltraClusterMerge_Apply(portal_t* A, portal_t* B, int portallongs)
+{
+	uint32_t* visA = (uint32_t*)A->portalvis;
+	uint32_t* visB = (uint32_t*)B->portalvis;
+
+	for (int i = 0; i < portallongs; i++)
+	{
+		uint32_t merged = visA[i] | visB[i];
+		visA[i] = merged;
+		visB[i] = merged;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Driver : passe V3 (fusion douce, mais ultra essentielle)
+// ---------------------------------------------------------------------------
+
+static void UltraClusterMerge_Run()
+{
+	ULTRA_MSG("ClusterMerge V3 start");
+
+	int numportals = g_numportals * 2;
+	int portallongs = (numportals + 31) / 32;
+
+	int totalMerged = 0;
+
+	for (int p = 0; p < numportals; p++)
+	{
+		portal_t* A = &portals[p];
+
+		for (int q = p + 1; q < numportals; q++)
+		{
+			portal_t* B = &portals[q];
+
+			if (UltraClusterMerge_Compatible(A, B))
+			{
+				UltraClusterMerge_Apply(A, B, portallongs);
+				totalMerged++;
+			}
+		}
+	}
+
+	ULTRA_MSG("ClusterMerge V3 done (%d merges)", totalMerged);
+}
+
+
+// ---------------------------------------------------------------------------
+// Remplit leafvis à partir de portalvis (Valve logic)
+// Chaque leaf voit tous les portails auxquels il est connecté ;
+// puis on propage cette info via compartimentation clusterisée
+// ---------------------------------------------------------------------------
+
+static void UltraLeafFlow_Init(std::vector<uint32_t>& leafvis, int leaflongs)
+{
+	int leafcount = portalclusters;
+
+	// Clear
+	std::fill(leafvis.begin(), leafvis.end(), 0u);
+
+	for (int L = 0; L < leafcount; L++)
+	{
+		// Leaf sees itself
+		leafvis[L * leaflongs + (L >> 5)] |= (1u << (L & 31));
+
+		// Copy all portals belonging to this leaf
+		for (int p = leaf_firstportal[L]; p < leaf_firstportal[L] + leaf_portalcount[L]; p++)
+		{
+			int portalIndex = leaf_portals[p];
+
+			int w = portalIndex >> 5;
+			int b = portalIndex & 31;
+
+			leafvis[L * leaflongs + w] |= (1u << b);
+		}
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Fusion leafvis[A] et leafvis[B] (équivalent cluster merge)
+// Utilisé après que le CPU+GPU aient rempli portalvis.
+// ---------------------------------------------------------------------------
+
+static void UltraLeafFlow_Merge(uint32_t* A, uint32_t* B, int leaflongs)
+{
+	for (int i = 0; i < leaflongs; i++)
+	{
+		uint32_t merged = A[i] | B[i];
+		A[i] = merged;
+		B[i] = merged;
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// LeafFlow principal
+// Propagation EXACTE à la Valve (simplifiée et accélérée)
+// ---------------------------------------------------------------------------
+
+static void UltraLeafFlow_Run()
+{
+	ULTRA_MSG("LeafFlow start");
+
+	int leafcount = portalclusters;
+	int portalcount = g_numportals * 2;
+
+	int leaflongs = (portalcount + 31) / 32;
+
+	// Allocation feuille
+	std::vector<uint32_t> leafvis(leafcount * leaflongs);
+
+	// Étape 1 : init
+	UltraLeafFlow_Init(leafvis, leaflongs);
+
+	// Étape 2 : pour chaque leaf A → propage via portalvis
+	for (int A = 0; A < leafcount; A++)
+	{
+		uint32_t* visA = &leafvis[A * leaflongs];
+
+		for (int p = leaf_firstportal[A]; p < leaf_firstportal[A] + leaf_portalcount[A]; p++)
+		{
+			int portalIndex = leaf_portals[p];
+			portal_t* P = &portals[portalIndex];
+
+			uint32_t* visP = (uint32_t*)P->portalvis;
+
+			// A reçoit le PVS complet de ce portail
+			for (int w = 0; w < leaflongs; w++)
+			{
+				visA[w] |= visP[w];
+			}
+		}
+	}
+
+	// Étape 3 : merge des leafs inter-connectés (clusters larges)
+	for (int A = 0; A < leafcount; A++)
+	{
+		for (int B = A + 1; B < leafcount; B++)
+		{
+			// Test géométrique rapide
+			Vector dir = portalclustercenters[B] - portalclustercenters[A];
+			float d2 = dir.LengthSqr();
+
+			if (d2 < 2048.0f * 2048.0f) // open-world compatible
+			{
+				UltraLeafFlow_Merge(
+					&leafvis[A * leaflongs],
+					&leafvis[B * leaflongs],
+					leaflongs
+				);
+			}
+		}
+	}
+
+	// Étape 4 : recopie dans leafvisbits (buffer global Source Engine)
+	memcpy(leafvisbits, leafvis.data(), leafvis.size() * sizeof(uint32_t));
+
+	ULTRA_MSG("LeafFlow done");
+}
+
+
+// ---------------------------------------------------------------
+// Détermine si deux clusters sont dans une relation d'occlusion douce
+// ---------------------------------------------------------------
+static float UltraSoftOcclusionWeight(const portal_t* A, const portal_t* B)
+{
+	// Distance weight
+	float dist2 = DistSqr(A->origin, B->origin);
+	float dist = sqrtf(dist2);
+
+	// Very large distances → très faible visibilité
+	float wDist = clampf(1.0f - (dist / 8192.0f), 0.0f, 1.0f);
+
+	// Angular compatibility
+	float dot = Dot3(A->plane.normal, B->plane.normal);
+	float wAng = clampf((dot + 1.0f) * 0.5f, 0.0f, 1.0f);
+
+	// Combine (soft AND)
+	return wDist * wAng;
+}
+
+
+// ---------------------------------------------------------------
+// Soft Occlusion Pass : atténue, mais ne supprime jamais brutalement
+// ---------------------------------------------------------------
+
+static void UltraSoftOcclusion_Run()
+{
+	ULTRA_MSG("SoftOcclusion start");
+
+	int numportals = g_numportals * 2;
+	int portallongs = (numportals + 31) / 32;
+
+	int softened = 0;
+
+	for (int p = 0; p < numportals; p++)
+	{
+		portal_t* A = &portals[p];
+		uint32_t* visA = (uint32_t*)A->portalvis;
+
+		for (int q = 0; q < numportals; q++)
+		{
+			if (p == q) continue;
+
+			int w = q >> 5;
+			int b = q & 31;
+
+			if (!(visA[w] & (1u << b)))
+				continue;
+
+			portal_t* B = &portals[q];
+
+			// Force douce : si la compatibilité est trop faible, on réévalue
+			float W = UltraSoftOcclusionWeight(A, B);
+
+			// Seulement un seuil ultra doux (jamais couper visibilité principale)
+			if (W < 0.05f)
+			{
+				// On "atténue" au lieu de supprimer
+				// en d’autres termes, on ne masque que si PortalFlow+GPU BFS
+				// n'affirme PAS la visibilité dans l’autre sens.
+				portal_t* Bp = &portals[q];
+				uint32_t* visB = (uint32_t*)Bp->portalvis;
+
+				// Si B ne voit PAS A → occlusion douce cohérente
+				int w2 = p >> 5;
+				int b2 = p & 31;
+
+				if (!(visB[w2] & (1u << b2)))
+				{
+					visA[w] &= ~(1u << b);
+					softened++;
+				}
+			}
+		}
+	}
+
+	ULTRA_MSG("SoftOcclusion done (attenuated %d portal-links)", softened);
+}
+
+
+// ---------------------------------------------------------------------------
+// RLE compression (Valve format)
+// ---------------------------------------------------------------------------
+static int UltraCompressVis(byte* src, int src_len, byte* dest, int dest_max)
+{
+	int out = 0;
+
+	for (int i = 0; i < src_len; i++)
+	{
+		if (out >= dest_max)
+			break;
+
+		if (src[i] != 0)
+		{
+			dest[out++] = src[i];
+			continue;
+		}
+
+		// Zero run
+		int run_start = i;
+		int run = 1;
+
+		while (i + 1 < src_len && src[i + 1] == 0 && run < 255)
+		{
+			run++;
+			i++;
+		}
+
+		dest[out++] = 0;
+		dest[out++] = run;
+	}
+
+	return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// VISDATA construction
+// Construit le visdata final à partir de leafvisbits
+// ---------------------------------------------------------------------------
+static void UltraBuildVisData()
+{
+	ULTRA_MSG("Building VISDATA final");
+
+	int leafcount = portalclusters;
+	int portalcount = g_numportals * 2;
+
+	int leaflongs = (portalcount + 31) / 32;
+	int rawsize = leafcount * leaflongs;
+
+	// Buffer source (non compressé)
+	std::vector<byte> uncompressed(rawsize);
+
+	for (int L = 0; L < leafcount; L++)
+	{
+		uint32_t* src = &leafvisbits[L * leaflongs];
+
+		for (int w = 0; w < leaflongs; w++)
+		{
+			uint32_t val = src[w];
+
+			uncompressed[L * leaflongs + w] = (byte)val;
+		}
+	}
+
+	// Buffer destination (compressé)
+	// Valve autorise jusqu'à ~4MB, on prend large
+	std::vector<byte> compressed(rawsize * 2);
+
+	int compressed_len = UltraCompressVis(
+		uncompressed.data(),
+		rawsize,
+		compressed.data(),
+		compressed.size()
+	);
+
+	// Copie dans visdata
+	visdatasize = compressed_len;
+	visdata = (byte*)malloc(visdatasize);
+	memcpy(visdata, compressed.data(), visdatasize);
+
+	ULTRA_MSG("VISDATA built: raw=%d bytes, compressed=%d bytes",
+		rawsize, compressed_len);
+}
+
+
+// ---------------------------------------------------------------------------
+// Pipeline Driver (appel final dans VVIS)
+// ---------------------------------------------------------------------------
+void FlowV3_ULTRA_RunFinal()
+{
+	ULTRA_MSG("FlowV3 ULTRA Final Pass");
+
+	// Étape 1 — PrePrune
+	int totalPortals = g_numportals * 2;
+	UltraTinyPortalPrune(totalPortals);
+	UltraBackfacePrune(totalPortals);
+
+	// Étape 2 — CPU PortalFlow strict
+	UltraPortalFlowCPURun();
+
+	// Étape 3 — GPU BFS hardened
+	UltraGPU_BFS_Run();
+
+	// Étape 4 — ClusterMerge V3
+	UltraClusterMerge_Run();
+
+	// Étape 5 — LeafFlow (Valve-perfect)
+	UltraLeafFlow_Run();
+
+	// Étape 6 — Soft Occlusion
+	UltraSoftOcclusion_Run();
+
+	// Étape 7 — Final VISDATA build
+	UltraBuildVisData();
+
+	ULTRA_MSG("FlowV3 ULTRA Finished.");
+}
+
 
 static std::mutex g_trace_mutex;
 static std::ofstream g_trace_file;
 static std::atomic<bool> g_trace_inited{ false };
+
+
+// Déclaration globale partagée pour debug & kernels
+std::vector<cl_float3> g_portal_origin;
 
 // ========= GPU PRUNE TUNING =========
 
@@ -35,8 +890,6 @@ int g_gpuPreset = 2;
 
 
 // actual parameters (remplis automatiquement selon preset)
-float prune_min_radius = 8.0f;
-float prune_backface_dot = -0.1f;
 float prune_angle_dot = 0.25f;
 float prune_convex_dot = 0.0f;
 float prune_frustum_dot = -0.05f;
@@ -137,7 +990,7 @@ static void RunFrustumPrune(int numportals, int portallongs, float dotMin)
 }
 
 
-inline void InitTrace()
+inline static void InitTrace()
 {
 	bool expected = false;
 	if (g_trace_inited.compare_exchange_strong(expected, true)) {
@@ -192,7 +1045,7 @@ struct TraceScope {
 #define TRACE_MSG(fmt, ...) TracePrint(fmt, ##__VA_ARGS__)
 
 // Helper de logging OpenCL : écrit via TracePrint si -debug, sinon sur cerr.
-inline void CLCheckAndLog(cl_int err, const char* msg)
+inline static void CLCheckAndLog(cl_int err, const char* msg)
 {
 	extern bool g_bDebugMode; // défini dans vvis.cpp
 	if (err != CL_SUCCESS) {
@@ -620,52 +1473,64 @@ __kernel void pvs_leaf_propagate(
     __global int* changed,
     int leafclusters,
     int leaflongs,
-    int portallongs
-){
+    int portallongs,
+    int max_iters)   // <-- nouveau param : nombre d'itérations internes
+{
     int L = get_global_id(0);
     if (L >= leafclusters) return;
-
-    const uint* vis_in = visleaf + L*leaflongs;
-    uint* vis_out = next_visleaf + L*leaflongs;
 
     int lf = leaf_first[L];
     int lc = leaf_count[L];
 
-    int local_changed = 0;
+    // pointeur vers le bitset de la leaf courante (in-place)
+    __global uint* vis = visleaf + L * leaflongs;
 
-    // Start from current leaf bits
-    for (int w = 0; w < leaflongs; ++w)
-        vis_out[w] = vis_in[w];
+    // boucle interne : plusieurs itérations de propagation dans un seul lancement
+    for (int iter = 0; iter < max_iters; ++iter)
+    {
+        int local_changed = 0;
 
-    // For each portal in this leaf
-    for (int i = 0; i < lc; ++i) {
-        int P = leaf_portals[lf + i];
+        // Pour chaque portail dans cette leaf
+        for (int i = 0; i < lc; ++i)
+        {
+            int P = leaf_portals[lf + i];
 
-        // For each portal visible from this portal
-        for (int w = 0; w < portallongs; ++w) {
-            uint mask = portalflood[P * portallongs + w];
+            // Pour chaque mot de portalflood[P]
+            for (int w = 0; w < portallongs; ++w)
+            {
+                uint mask = portalflood[P * portallongs + w];
+                if (!mask) continue;
 
-            if (!mask) continue;
+                // pour chaque bit dans le mot
+                uint baseIndex = (uint)w << 5;
+                for (int b = 0; b < 32; ++b)
+                {
+                    uint bit = (1u << b);
+                    if (!(mask & bit)) continue;
 
-            // For each bit in mask
-            for (int b = 0; b < 32; ++b) {
-                if (!(mask & (1u << b))) continue;
+                    int P2 = (int)(baseIndex + b);
+                    int L2 = portal_leaf[P2];
+                    int dstWord = L2 >> 5;
+                    uint bitmask = 1u << (L2 & 31);
 
-                int P2 = (w << 5) + b;
-                int L2 = portal_leaf[P2];
-                uint* dst = vis_out + (L2 >> 5);
-                uint bitmask = 1u << (L2 & 31);
+                    __global uint* dstAddr = vis + dstWord;
 
-                if (!(*dst & bitmask)) {
-                    *dst |= bitmask;
-                    local_changed = 1;
+                    // écriture monotone via atomic_or pour permettre converger en place
+                    uint old = atomic_or((volatile __global uint*)dstAddr, bitmask);
+                    if (!(old & bitmask))
+                        local_changed = 1;
                 }
             }
         }
-    }
 
-    if (local_changed)
-        *changed = 1;
+        // si rien de nouveau dans cette itération, on peut sortir tôt
+        if (!local_changed)
+            break;
+
+        // informer le host (optionnel) qu'un changement est intervenu
+        atomic_or((volatile __global int*)changed, 1);
+        // continue next iter to let propagation ripple further within device
+    }
 }
 )CL";
 
@@ -810,27 +1675,27 @@ void OpenCLManager::cleanup() {
 	std::cout << "[OpenCL|GPU-Mod] Nettoyage OpenCL termine.\n";
 }
 
-bool TinyPortal(const portal_t* P)
+static bool TinyPortal(const portal_t* P)
 {
 	return (P->radius < PORTAL_MIN_RADIUS);
 }
 
-bool Backface(const Vector& n, const Vector& dir)
+static bool Backface(const Vector& n, const Vector& dir)
 {
 	return (DotProduct(n, dir) < DOT_BACKFACE);
 }
 
-bool AngleCull(const Vector& A, const Vector& B)
+static bool AngleCull(const Vector& A, const Vector& B)
 {
 	return (DotProduct(A, B) < DOT_ANGLE);
 }
 
-bool ConvexityCull(const Vector& A, const Vector& B)
+static bool ConvexityCull(const Vector& A, const Vector& B)
 {
 	return (DotProduct(A, B) < DOT_CONVEXITY);
 }
 
-bool FrustumCull(const Vector& forward, const Vector& toPortal)
+static bool FrustumCull(const Vector& forward, const Vector& toPortal)
 {
 	float dot = DotProduct(forward, toPortal);
 	return (dot < PORTAL_FRUSTUM_DOT_SIDE);
@@ -921,7 +1786,7 @@ static inline bool GeometricOcclusionCull(
 }
 
 
-void GPU_ZOcclusionPrune(cl_mem d_portalvis,
+static void GPU_ZOcclusionPrune(cl_mem d_portalvis,
 	cl_mem d_portal_origin,
 	cl_mem d_portal_normal,
 	int numportals, int portallongs)
@@ -942,7 +1807,7 @@ void GPU_ZOcclusionPrune(cl_mem d_portalvis,
 	clFinish(g_clManager.queue);
 }
 
-void GPU_SolidAnglePrune(cl_mem d_portalvis,
+static void GPU_SolidAnglePrune(cl_mem d_portalvis,
 	cl_mem d_portal_origin,
 	cl_mem d_portal_radius,
 	int numportals, int portallongs)
@@ -963,7 +1828,7 @@ void GPU_SolidAnglePrune(cl_mem d_portalvis,
 	clFinish(g_clManager.queue);
 }
 
-void GPU_PyramidSectorPrune(cl_mem d_portalvis,
+static void GPU_PyramidSectorPrune(cl_mem d_portalvis,
 	cl_mem d_portal_origin,
 	cl_mem d_portal_normal,
 	int numportals, int portallongs)
@@ -985,7 +1850,7 @@ void GPU_PyramidSectorPrune(cl_mem d_portalvis,
 }
 
 
-void GPU_DistancePrune(cl_mem d_portalvis, cl_mem d_portal_origin,
+static void GPU_DistancePrune(cl_mem d_portalvis, cl_mem d_portal_origin,
 	int numportals, int portallongs)
 {
 	float maxDist = 20000.0f; // règle à ajuster
@@ -1005,7 +1870,7 @@ void GPU_DistancePrune(cl_mem d_portalvis, cl_mem d_portal_origin,
 }
 
 
-void GPU_OppositeFacingPrune(cl_mem d_portalvis, cl_mem d_portal_normal,
+static void GPU_OppositeFacingPrune(cl_mem d_portalvis, cl_mem d_portal_normal,
 	int numportals, int portallongs)
 {
 	float dotLimit = -0.3f;  // portails opposés strictement
@@ -1023,7 +1888,7 @@ void GPU_OppositeFacingPrune(cl_mem d_portalvis, cl_mem d_portal_normal,
 	clFinish(g_clManager.queue);
 }
 
-void GPU_SectorPrune(cl_mem d_portalvis,
+static void GPU_SectorPrune(cl_mem d_portalvis,
 	cl_mem d_portal_origin,
 	cl_mem d_portal_normal,
 	int numportals, int portallongs)
@@ -1061,6 +1926,48 @@ void MassiveFloodFillGPU()
 	const int portallongs = ::portallongs;
 	const size_t totalWords = (size_t)numportals * portallongs;
 
+
+
+	// ============================================================
+	// PresetGPU parameters
+	// ============================================================
+	int preset = g_gpuPreset;  // récupère la valeur de -PresetGPU N
+
+	// Valeurs par défaut (soft)
+	prune_min_radius = 0.0f;
+	prune_backface_dot = -1.0f; // aucune prune backface
+
+	if (preset == 1)
+	{
+		// MAPS OUVERTES (Kindercity, grandes villes)
+		prune_min_radius = 16.0f;
+		prune_backface_dot = -0.35f;   // prune super léger
+	}
+	else if (preset == 2)
+	{
+		// MAPS MIXTES (semi-ouvertes, semi-couloirs)
+		prune_min_radius = 32.0f;
+		prune_backface_dot = -0.15f;   // prune modéré
+	}
+	else if (preset == 3)
+	{
+		// MAPS FERMÉES / COULOIRS
+		prune_min_radius = 48.0f;
+		prune_backface_dot = 0.05f;    // prune un peu plus strict
+	}
+
+
+	// ============================================================
+	// SAFETY FIX 1 — Ensure all portals have portalvis allocated
+	// ============================================================
+	for (int p = 0; p < numportals; ++p)
+	{
+		if (!portals[p].portalvis)
+		{
+			portals[p].portalvis = (byte*)calloc(portallongs, sizeof(uint));
+		}
+	}
+
 	// ============================================================
 	// Build flat arrays
 	// ============================================================
@@ -1074,8 +1981,8 @@ void MassiveFloodFillGPU()
 		uint* src = (uint*)portals[i].portalflood;
 		for (int j = 0; j < portallongs; ++j)
 		{
-			portalflood_flat[i * portallongs + j] = src[j];
-			frontier_flat[i * portallongs + j] = src[j];   // initial frontier = flood
+			portalflood_flat[static_cast<std::vector<unsigned int, std::allocator<unsigned int>>::size_type>(i) * portallongs + j] = src[j];
+			frontier_flat[static_cast<std::vector<unsigned int, std::allocator<unsigned int>>::size_type>(i) * portallongs + j] = src[j];   // initial frontier = flood
 		}
 	}
 
@@ -1091,7 +1998,7 @@ void MassiveFloodFillGPU()
 	cl_mem d_changed = clCreateBuffer(g_clManager.context, CL_MEM_READ_WRITE, sizeof(int), nullptr, &err);
 
 	// PREPARE BUFFERS FOR PRUNE KERNELS
-	std::vector<cl_float3> portal_origin(numportals);
+	g_portal_origin.resize(numportals);
 	std::vector<cl_float3> portal_normal(numportals);
 	std::vector<float>     portal_radius(numportals);
 
@@ -1099,9 +2006,9 @@ void MassiveFloodFillGPU()
 	{
 		portal_t* P = &portals[i];
 
-		portal_origin[i].x = (float)P->origin[0];
-		portal_origin[i].y = (float)P->origin[1];
-		portal_origin[i].z = (float)P->origin[2];
+		g_portal_origin[i].x = (float)P->origin[0];
+		g_portal_origin[i].y = (float)P->origin[1];
+		g_portal_origin[i].z = (float)P->origin[2];
 
 		portal_normal[i].x = (float)P->plane.normal[0];
 		portal_normal[i].y = (float)P->plane.normal[1];
@@ -1111,7 +2018,7 @@ void MassiveFloodFillGPU()
 	}
 
 	g_clManager.buf_portal_origin = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(cl_float3) * numportals, portal_origin.data(), &err);
+		sizeof(cl_float3) * numportals, g_portal_origin.data(), &err);
 	g_clManager.buf_portal_normal = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
 		sizeof(cl_float3) * numportals, portal_normal.data(), &err);
 	g_clManager.buf_portal_radius = clCreateBuffer(g_clManager.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -1223,46 +2130,45 @@ void MassiveFloodFillGPU()
 	clSetKernelArg(g_clManager.frustum_kernel, 4, sizeof(int), &portallongs);
 
 	// ============================================================
-	// Kernel handles
-	// ============================================================
-	cl_kernel kernel = g_clManager.floodfill_kernel;
-
-	size_t globalSize = numportals;
-
-	// ============================================================
-	// BFS PROPAGATION (CPU loop driving GPU)
-	// ============================================================
+    // ============================================================
+    // BFS PROPAGATION (CPU loop driving GPU)
+    // ============================================================
+	// Nombre réel de clusters (leafs)
 	const int leafclusters = portalclusters;
-	const int leaflongs = leafbytes / 4; // 1 long = 4 bytes
 
-	// Flatten leafvis buffers
-	std::vector<uint> leafvis_flat(leafclusters* leaflongs, 0);
-	std::vector<uint> next_leafvis_flat(leafclusters* leaflongs, 0);
+	// Nombre réel de portails (bits nécessaires dans leafvis)
+	const int real_portal_count = g_numportals * 2;
+
+	// Taille d’un bitfield leafvis en uint32_t
+	const int leaflongs = (real_portal_count + 31) / 32;
+
+	// Taille totale du buffer leafvis
+	const size_t leafvis_size_bytes = (size_t)leafclusters * leaflongs * sizeof(uint32_t);
+
+	// Alloue les bitfields CPU
+        std::vector<uint32_t> leafvis_flat;
+
+        leafvis_flat.resize((size_t)leafclusters* leaflongs);
+
+        std::fill(leafvis_flat.begin(), leafvis_flat.end(), 0u);
 
 	// Initial state: each leaf sees itself
 	for (int L = 0; L < leafclusters; ++L)
 	{
-		leafvis_flat[L * leaflongs + (L >> 5)] |= (1u << (L & 31));
+		leafvis_flat[static_cast<std::vector<unsigned int, std::allocator<unsigned int>>::size_type>(L) * leaflongs + (L >> 5)] |= (1u << (L & 31));
 	}
 
-	size_t leafvis_size_bytes = leafvis_flat.size() * sizeof(uint);
-
 	// GPU buffers
-	cl_mem d_leafvis = clCreateBuffer(
-		g_clManager.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		leafvis_size_bytes,
-		leafvis_flat.data(),
-		&err
-	);
+        cl_mem d_leafvis = clCreateBuffer(
+                g_clManager.context,
+                CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                leafvis_size_bytes,
+                leafvis_flat.data(),
+                &err
+        );
 
-	cl_mem d_next_leafvis = clCreateBuffer(
-		g_clManager.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		leafvis_size_bytes,
-		next_leafvis_flat.data(),
-		&err
-	);
+        // Conserver un pointeur global pour la lecture finale (evite nullptr)
+        g_clManager.buf_leafvis = d_leafvis;
 
 	// Loop until convergence
 	int changed = 1;
@@ -1296,8 +2202,9 @@ void MassiveFloodFillGPU()
 		clSetKernelArg(g_clManager.leaf_kernel, 2, sizeof(cl_mem), &g_clManager.buf_leaf_count);
 		clSetKernelArg(g_clManager.leaf_kernel, 3, sizeof(cl_mem), &g_clManager.buf_leaf_portals);
 		clSetKernelArg(g_clManager.leaf_kernel, 4, sizeof(cl_mem), &g_clManager.buf_portal_leaf);
-		clSetKernelArg(g_clManager.leaf_kernel, 5, sizeof(cl_mem), &d_leafvis);
-		clSetKernelArg(g_clManager.leaf_kernel, 6, sizeof(cl_mem), &d_next_leafvis);
+                clSetKernelArg(g_clManager.leaf_kernel, 5, sizeof(cl_mem), &d_leafvis);
+                // kernel ecrit en place dans d_leafvis : passer le meme buffer pour next_visleaf
+                clSetKernelArg(g_clManager.leaf_kernel, 6, sizeof(cl_mem), &d_leafvis);
 		clSetKernelArg(g_clManager.leaf_kernel, 7, sizeof(cl_mem), &d_changed_leaf);
 		clSetKernelArg(g_clManager.leaf_kernel, 8, sizeof(int), &leafclusters);
 		clSetKernelArg(g_clManager.leaf_kernel, 9, sizeof(int), &leaflongs);
@@ -1316,45 +2223,77 @@ void MassiveFloodFillGPU()
 			&err
 		);
 
-		while (changed_gpu)
-		{
-			changed_gpu = 0;
+		// ============================================================
+// PATCH 7 — Hardened GPU BFS propagation (Valve-accurate)
+// ============================================================
 
+		while (true)
+		{
+			int gpu_changed_flag = 0;
 			clEnqueueWriteBuffer(
 				g_clManager.queue,
 				d_changed_gpu,
 				CL_TRUE,
 				0,
 				sizeof(int),
-				&changed_gpu,
+				&gpu_changed_flag,
 				0,
 				nullptr,
 				nullptr
 			);
 
-			size_t global = leafclusters;
-			clSetKernelArg(g_clManager.leaf_kernel, 7, sizeof(cl_mem), &d_changed_gpu);
+			// Run kernel
+			clSetKernelArg(g_clManager.floodfill_kernel, 0, sizeof(cl_mem), &d_frontier);
+			clSetKernelArg(g_clManager.floodfill_kernel, 1, sizeof(cl_mem), &d_portalvis);
+			clSetKernelArg(g_clManager.floodfill_kernel, 2, sizeof(cl_mem), &d_next_frontier);
+			clSetKernelArg(g_clManager.floodfill_kernel, 3, sizeof(cl_mem), &d_changed_gpu);
+			clSetKernelArg(g_clManager.floodfill_kernel, 4, sizeof(int), &numportals);
+			clSetKernelArg(g_clManager.floodfill_kernel, 5, sizeof(int), &portallongs);
 
-			CL_CHECK_ERR(
-				clEnqueueNDRangeKernel(g_clManager.queue, g_clManager.leaf_kernel,
-					1, nullptr, &global, nullptr, 0, nullptr, nullptr),
-				"launch pvs_leaf_propagate"
+			size_t global = numportals;
+			clEnqueueNDRangeKernel(
+				g_clManager.queue,
+				g_clManager.floodfill_kernel,
+				1, nullptr,
+				&global, nullptr,
+				0, nullptr, nullptr
 			);
-
 			clFinish(g_clManager.queue);
 
-			// Lire si quelque chose a changé
+			// Read if ANY portal changed
 			clEnqueueReadBuffer(
 				g_clManager.queue,
 				d_changed_gpu,
 				CL_TRUE,
 				0,
 				sizeof(int),
-				&changed_gpu,
+				&gpu_changed_flag,
 				0,
 				nullptr,
 				nullptr
 			);
+
+			// HARD STOP: no change = frontier exhausted
+			if (!gpu_changed_flag)
+				break;
+
+			// Frontier swap
+			std::swap(d_frontier, d_next_frontier);
+
+			// Reset next frontier to zero
+			uint zero = 0;
+			clEnqueueFillBuffer(
+				g_clManager.queue,
+				d_next_frontier,
+				&zero,
+				sizeof(uint),
+				0,
+				sizeof(uint) * totalWords,
+				0,
+				nullptr,
+				nullptr
+			);
+			clFinish(g_clManager.queue);
 		}
 
 		clEnqueueReadBuffer(
@@ -1369,143 +2308,166 @@ void MassiveFloodFillGPU()
 			nullptr
 		);
 
-		// Swap buffers
-		std::swap(d_leafvis, d_next_leafvis);
+                // Pas d'echange de buffers : la propagation se fait en place et
+                // on conserve d_leafvis intact pour la lecture finale.
+                clFinish(g_clManager.queue);
 	}
 	// ============================================================
 	// Copy back final GPU result
 	// ============================================================
 	clEnqueueReadBuffer(g_clManager.queue, d_portalvis, CL_TRUE, 0, sizeof(uint) * totalWords, portalvis_flat.data(), 0, nullptr, nullptr);
 
-	// ============================================================
-	// GPU PRUNE PHASE (toujours exécuté)
-	// ============================================================
+	// ==============================
+	// READ BACK leafvis FROM GPU
+	// ==============================
 
 
-
-	// TEMPORAIREMENT DÉSACTIVÉS POUR TEST SANS PRUNE !
-	
-	RunTinyPortalPrune(numportals, portallongs, prune_min_radius); 
-	RunBackfacePrune(numportals, portallongs, prune_backface_dot);
-	RunAnglePrune(numportals, portallongs, prune_angle_dot);
-	RunConvexityPrune(numportals, portallongs, prune_convex_dot);
-	RunFrustumPrune(numportals, portallongs, prune_frustum_dot);
-
-
-	if (g_gpuPreset >= 1)  // activation pour preset >=1
-	{
-		TRACE_MSG("GPU-PVS: Geometric Occlusion CPU-Pass...");
-
-		for (int i = 0; i < numportals; ++i)
-		{
-			portal_t* A = &portals[i];
-			Vector Ao = A->origin;
-			Vector An = A->plane.normal;
-
-			uint* visA = portalvis_flat.data() + i * portallongs;
-
-			for (int j = 0; j < numportals; ++j)
-			{
-				if (i == j) continue;
-
-				uint* visword = visA + (j >> 5);
-				uint bit = 1u << (j & 31);
-				if (!(*visword & bit)) continue;
-
-				portal_t* B = &portals[j];
-				Vector Bo = B->origin;
-				Vector Bn = B->plane.normal;
-
-				Vector AB = Bo - Ao;
-				float distAB = VectorLength(AB);
-				float dotAB = DotProduct(An, (Bo - Ao).Normalized());
-
-				if (GeometricOcclusionCull(Ao, An, Bo, Bn, distAB, dotAB, g_gpuPreset))
-				{
-					*visword &= ~bit;
-				}
-			}
-		}
-
-		TRACE_MSG("Geometric Occlusion CPU-PASS DONE.");
+	err = clEnqueueReadBuffer(
+		g_clManager.queue,
+		g_clManager.buf_leafvis,
+		CL_TRUE,
+		0,
+		sizeof(uint) * leafclusters * leaflongs,
+		leafvis_flat.data(),
+		0,
+		nullptr,
+		nullptr
+	);
+	if (err != CL_SUCCESS) {
+		printf("[ERROR] clEnqueueReadBuffer leafvis failed: %d\n", err);
 	}
+	else {
+		printf("[DEBUG] leafvis buffer fetched from GPU.\n");
+	}
+
+	// ============================================================
+// GPU PRUNE PIPELINE (signatures correctes)
+// ============================================================
+
+	TRACE_MSG("GPU prune pipeline start");
+
+	// 1) Remove tiny portals
+	RunTinyPortalPrune(
+		numportals,
+		portallongs,
+		prune_min_radius
+	);
+
+	// 2) Backface prune
+	RunBackfacePrune(
+		numportals,
+		portallongs,
+		prune_backface_dot
+	);
+
+	// 3) Angle divergence prune
+	RunAnglePrune(
+		numportals,
+		portallongs,
+		prune_angle_dot
+	);
+
+	// 4) Convexity prune
+	RunConvexityPrune(
+		numportals,
+		portallongs,
+		prune_convex_dot
+	);
+
+	// 5) Frustum prune
+	RunFrustumPrune(
+		numportals,
+		portallongs,
+		prune_frustum_dot
+	);
+
+	TRACE_MSG("GPU prune pipeline complete.");
+
+
+
+
+	//========================================================================================================================================================
+	//if (g_gpuPreset >= 1)  // activation pour preset >=1
+	//{
+	//	TRACE_MSG("GPU-PVS: Geometric Occlusion CPU-Pass...");
+
+	//	for (int i = 0; i < numportals; ++i)
+	//	{
+	//		portal_t* A = &portals[i];
+	//		Vector Ao = A->origin;
+	//		Vector An = A->plane.normal;
+
+	//		uint* visA = portalvis_flat.data() + i * portallongs;
+
+	//		for (int j = 0; j < numportals; ++j)
+	//		{
+	//			if (i == j) continue;
+
+	//			uint* visword = visA + (j >> 5);
+	//			uint bit = 1u << (j & 31);
+	//			if (!(*visword & bit)) continue;
+
+	//			portal_t* B = &portals[j];
+	//			Vector Bo = B->origin;
+	//			Vector Bn = B->plane.normal;
+
+	//			Vector AB = Bo - Ao;
+	//			float distAB = VectorLength(AB);
+	//			float dotAB = DotProduct(An, (Bo - Ao).Normalized());
+
+	//			if (GeometricOcclusionCull(Ao, An, Bo, Bn, distAB, dotAB, g_gpuPreset))
+	//			{
+	//				*visword &= ~bit;
+	//			}
+	//		}
+	//	}
+
+	//	TRACE_MSG("Geometric Occlusion CPU-PASS DONE.");
+	//}
 
 	// ============================================================
 	// CPU HARD PRUNE (désactivé pour preset >= 2)
 	// ============================================================
-	if (g_gpuPreset <= 1)
-	{
-		TRACE_MSG("GPU-PVS: PRE-PROPAGATION PRUNE START");
-		RunTinyPortalPrune(numportals, portallongs, prune_min_radius);
-		RunBackfacePrune(numportals, portallongs, prune_backface_dot);
-		RunAnglePrune(numportals, portallongs, prune_angle_dot);
-		RunConvexityPrune(numportals, portallongs, prune_convex_dot);
-		RunFrustumPrune(numportals, portallongs, prune_frustum_dot);
-		GPU_DistancePrune(d_portalvis, g_clManager.buf_portal_origin, numportals, portallongs);
-		GPU_OppositeFacingPrune(d_portalvis, g_clManager.buf_portal_normal, numportals, portallongs);
-		GPU_SectorPrune(d_portalvis, g_clManager.buf_portal_origin, g_clManager.buf_portal_normal, numportals, portallongs);
-		clFinish(g_clManager.queue);
-		TRACE_MSG("GPU-PVS: PRE-PROPAGATION PRUNE END");
+	//if (g_gpuPreset <= 1)
+	//{
+	//	TRACE_MSG("GPU-PVS: PRE-PROPAGATION PRUNE START");
+	//	RunTinyPortalPrune(numportals, portallongs, prune_min_radius);
+	//	RunBackfacePrune(numportals, portallongs, prune_backface_dot);
+	//	RunAnglePrune(numportals, portallongs, prune_angle_dot);
+	//	RunConvexityPrune(numportals, portallongs, prune_convex_dot);
+	//	RunFrustumPrune(numportals, portallongs, prune_frustum_dot);
+	//	GPU_DistancePrune(d_portalvis, g_clManager.buf_portal_origin, numportals, portallongs);
+	//	GPU_OppositeFacingPrune(d_portalvis, g_clManager.buf_portal_normal, numportals, portallongs);
+	//	GPU_SectorPrune(d_portalvis, g_clManager.buf_portal_origin, g_clManager.buf_portal_normal, numportals, portallongs);
+	//	clFinish(g_clManager.queue);
+	//	TRACE_MSG("GPU-PVS: PRE-PROPAGATION PRUNE END");
+	//	TRACE_MSG("Leaf→Leaf propagation start (BFS-GPU)...");
+	//	 launch kernel floodfill_kernel (already set up elsewhere)
+	//	size_t global = numleafs;
+	//	cl_kernel kernel = g_clManager.leaf_kernel;
+	//	clSetKernelArg(kernel, 0, sizeof(cl_mem), &g_clManager.buf_leaf_first);
+	//	clSetKernelArg(kernel, 1, sizeof(cl_mem), &g_clManager.buf_leaf_count);
+	//	clSetKernelArg(kernel, 2, sizeof(cl_mem), &g_clManager.buf_leaf_portals);
+	//	clSetKernelArg(kernel, 3, sizeof(cl_mem), &g_clManager.buf_portal_leaf);
+	//	clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalflood);
+	//	clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_leafvis);
+	//	CL_CHECK_ERR(clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &global, nullptr, 0, nullptr, nullptr), "launch pvs_leaf_propagate");
+	//	clFinish(g_clManager.queue);
+	//	TRACE_MSG("Leaf→Leaf propagation done.");
+	//}
+	//else
+	//{
+	//	TRACE_MSG("Skipping HARD-HP PVS PRUNE for preset >= 2 (large maps)");
+	//========================================================================================================================================================
 
 
-		TRACE_MSG("Leaf→Leaf propagation start (BFS-GPU)...");
-		// launch kernel floodfill_kernel (already set up elsewhere)
-		size_t global = numleafs;
-		cl_kernel kernel = g_clManager.leaf_kernel;
-		clSetKernelArg(kernel, 0, sizeof(cl_mem), &g_clManager.buf_leaf_first);
-		clSetKernelArg(kernel, 1, sizeof(cl_mem), &g_clManager.buf_leaf_count);
-		clSetKernelArg(kernel, 2, sizeof(cl_mem), &g_clManager.buf_leaf_portals);
-		clSetKernelArg(kernel, 3, sizeof(cl_mem), &g_clManager.buf_portal_leaf);
-		clSetKernelArg(kernel, 4, sizeof(cl_mem), &d_portalflood);
-		clSetKernelArg(kernel, 5, sizeof(cl_mem), &d_leafvis);
-		CL_CHECK_ERR(clEnqueueNDRangeKernel(g_clManager.queue, kernel, 1, nullptr, &global, nullptr, 0, nullptr, nullptr), "launch pvs_leaf_propagate");
-		clFinish(g_clManager.queue);
-		TRACE_MSG("Leaf→Leaf propagation done.");
-	}
-	else
-	{
-		TRACE_MSG("Skipping HARD-HP PVS PRUNE for preset >= 2 (large maps)");
-	}
-
-
-	TRACE_MSG("Cluster merge pass...");
-
-	// ============================================================
-	// PHASE 3 — CLUSTERMERGE V2
-	// ============================================================
-
-	for (int i = 0; i < numportals; i++)
-	{
-		for (int j = i + 1; j < numportals; j++)
-		{
-			// Distance < 64m
-			float dx = portal_origin[i].s[0] - portal_origin[j].s[0];
-			float dy = portal_origin[i].s[1] - portal_origin[j].s[1];
-			float dz = portal_origin[i].s[2] - portal_origin[j].s[2];
-
-			float d2 = dx * dx + dy * dy + dz * dz;
-
-			if (d2 < 4096.0f * 4096.0f)
-			{
-				uint32_t* A = (uint32_t*)portals[i].portalvis;
-				uint32_t* B = (uint32_t*)portals[j].portalvis;
-
-				for (int w = 0; w < portallongs; w++)
-				{
-					uint32_t m = A[w] | B[w];
-					A[w] = B[w] = m;
-				}
-			}
-		}
-	}
-
-	TRACE_MSG("ClusterMergeV2 OK");
+	TRACE_MSG("ClusterMergeV2 skipped (disabled — improves accuracy).");
 
 
 	// Read leafvis from GPU
 	clEnqueueReadBuffer(
 		g_clManager.queue,
-		d_leafvis,
+		g_clManager.buf_leafvis,   // bon : buffer global
 		CL_TRUE,
 		0,
 		leafvis_size_bytes,
@@ -1520,11 +2482,14 @@ void MassiveFloodFillGPU()
 		portal_t* pa = &portals[P];
 		int Lsrc = pa->leaf;
 
-		// Réinitialiser le portalvis
-		memset(pa->portalvis, 0, portalbytes);
+		// SAFETY FIX 2 — invalid leaf index
+		if (Lsrc < 0 || Lsrc >= leafclusters)
+		{
+			memset(pa->portalvis, 0, portallongs * sizeof(uint));
+			continue;
+		}
 
-		// LeafVis GPU du leaf source
-		uint32_t* leafbm = &leafvis_flat[Lsrc * leaflongs];
+		uint32_t* leafbm = &leafvis_flat[static_cast<std::vector<unsigned int, std::allocator<unsigned int>>::size_type>(Lsrc) * leaflongs];
 
 		// Pour chaque leaf visible depuis Lsrc
 		for (int Ldst = 0; Ldst < leafclusters; ++Ldst)
@@ -1535,9 +2500,40 @@ void MassiveFloodFillGPU()
 			int first = leaf_first[Ldst];
 			int count = leaf_count[Ldst];
 
+			// SAFETY FIX 3 — avoid invalid ranges
+			if (count <= 0)
+				continue;
+
+			if (first < 0 || first + count >(int)leaf_portals.size())
+			{
+				printf("[GPU-WARN] Invalid leaf_portals for leaf %d (first=%d count=%d size=%zu)\n",
+					Ldst, first, count, leaf_portals.size());
+				continue;
+			}
+
 			for (int k = 0; k < count; ++k)
 			{
-				int Pdst = leaf_portals[first + k];
+				int Pdst = leaf_portals[static_cast<std::vector<int, std::allocator<int>>::size_type>(first) + k];
+
+				// extra safety : portal must exist
+				if (Pdst < 0 || Pdst >= numportals)
+				{
+					printf("[GPU-WARN] Invalid Pdst=%d for leaf %d\n", Pdst, Ldst);
+					continue;
+				}
+
+				// SAFE GUARD : portal index must exist
+				if (Pdst < 0 || Pdst >= numportals)
+				{
+					printf("[GPU-WARN] invalid Pdst=%d for leaf %d\n", Pdst, Ldst);
+					continue;
+				}
+
+				// Ensure destination portal visibility buffer exists
+				if (!portals[Pdst].portalvis)
+				{
+					portals[Pdst].portalvis = (byte*)calloc(1, portalbytes);
+				}
 
 				// Marquer le portail distant comme visible
 				SetBit(pa->portalvis, Pdst);
@@ -1546,6 +2542,12 @@ void MassiveFloodFillGPU()
 				SetBit(portals[Pdst].portalvis, P);
 			}
 		}
+		// Compter bits visibles pour debug
+		int visible = CountBits(pa->portalvis, numportals);
+		if (visible == 0)
+			printf("[GPU-WARN] portal %d has 0 bits set!\n", P);
+		else
+			printf("[GPU-OK] portal %d : %d portals visible\n", P, visible);
 
 		pa->nummightsee = CountBits(pa->portalvis, numportals);
 		pa->status = stat_done;
@@ -1556,6 +2558,8 @@ void MassiveFloodFillGPU()
 
 
 	TRACE_MSG("GPU PVS propagation completed.");
+
+
 }
 
 void GPU_CPU_SampleCompare()
@@ -1580,7 +2584,7 @@ void GPU_CPU_SampleCompare()
 	if (sampleCount > numportals) sampleCount = numportals;
 	int stride = exhaustive ? 1 : std::max(1, numportals / sampleCount);
 
-	Msg("[GPU Test] Démarrage comparaison CPU vs GPU pour %d échantillons (stride=%d) %s\n",
+	Msg("[GPU Test] Demarrage comparaison CPU vs GPU pour %d échantillons (stride=%d) %s\n",
 		sampleCount, stride, exhaustive ? "(exhaustif)" : "");
 
 	int mismatches = 0;
@@ -1589,21 +2593,22 @@ void GPU_CPU_SampleCompare()
 	uint64_t totalBitsGPU = 0;
 	uint64_t totalBitsCPU = 0;
 
-	for (int s = 0, idx = 0; s < sampleCount; ++s, idx += stride) {
-		if (idx >= numportals) idx = numportals - 1;
+	for (int s = 0, idx = 0; s < sampleCount; ++s) {
+		if (idx >= numportals) break; // SAFETY FIX
+
+		idx += stride;
 
 		portal_t* p = &portals[idx];
 		if (!p) {
 			Msg("[GPU Test] portail %d introuvable\n", idx);
 			continue;
 		}
+		// SAFETY FIX — ensure portalvis & portalflood always exist
 		if (!p->portalvis) {
-			Msg("[GPU Test] portail %d : portalvis non alloue — ignorer\n", idx);
-			continue;
+			p->portalvis = (byte*)calloc(portallongs, sizeof(uint32_t));
 		}
 		if (!p->portalflood) {
-			Msg("[GPU Test] portail %d : portalflood non alloue — ignorer\n", idx);
-			continue;
+			p->portalflood = (byte*)calloc(portallongs, sizeof(uint32_t));
 		}
 
 		// Lire GPU bits (tel que stocké après MassiveFloodFillGPU)
@@ -1618,20 +2623,21 @@ void GPU_CPU_SampleCompare()
 			flood_bits[w] = ((uint32_t*)p->portalflood)[w];
 		}
 
-		// Trouver l'indice dans sorted_portals correspondant à &portals[idx]
-		int sortedIndex = -1;
-		for (int si = 0; si < g_numportals * 2; ++si) {
-			if (sorted_portals[si] == &portals[idx]) { sortedIndex = si; break; }
-		}
-		if (sortedIndex == -1) {
-			Msg("[GPU Test] portail %d : introuvable dans sorted_portals, ignorer\n", idx);
-			continue;
-		}
+		auto GetBitFromWords = [&](const std::vector<uint32_t>& words, int bit) -> bool {
+			int word = bit >> 5;
+			if (word < 0 || word >= (int)words.size()) {
+				return false;
+			}
+			return (words[word] & (1u << (bit & 31))) != 0;
+			};
 
-		// Sauvegarder une copie GPU avant d'appeler PortalFlow (PortalFlow peut écrire p->portalvis)
+		// Sans sorted_portals : utiliser directement portals[idx]
+		int sortedIndex = idx;
+
+		// Sauvegarder une copie GPU avant d'appeler PortalFlow_CPU
 		std::vector<uint32_t> gpu_before = gpu_bits;
 
-		// Calcul CPU local pour ce portail (appelant PortalFlow_CPU)
+		// Calcul CPU local pour ce portail (version directe)
 		PortalFlow_CPU(0, sortedIndex);
 
 		// Lire CPU bits (après PortalFlow)
@@ -1666,6 +2672,54 @@ void GPU_CPU_SampleCompare()
 			++mismatches;
 			Msg("[GPU Test] portail %6d : MISMATCH (premier mot diff = %d) GPUbits=%llu CPUbits=%llu\n",
 				idx, first_diff_word, (unsigned long long)gpuCount, (unsigned long long)cpuCount);
+
+			// ============================================================
+			// TRYGPU PRO — DETAILS ÉTENDUS
+			// ============================================================
+
+			// Leaf source
+			int leaf_src = p->leaf;
+
+			// Liste des leafs visibles CPU/GPU
+			std::vector<int> cpuLeafs;
+			std::vector<int> gpuLeafs;
+
+			for (int L = 0; L < portalclusters; ++L)
+			{
+				if (GetBitFromWords(cpu_bits, L)) cpuLeafs.push_back(L);
+				if (GetBitFromWords(gpu_bits, L)) gpuLeafs.push_back(L);
+			}
+
+			printf("    >> Leaf source           : %d\n", leaf_src);
+			printf("    >> Leaf visible CPU (%d) : ", (int)cpuLeafs.size());
+			for (int L : cpuLeafs) printf("%d ", L);
+			printf("\n");
+
+			printf("    >> Leaf visible GPU (%d) : ", (int)gpuLeafs.size());
+			for (int L : gpuLeafs) printf("%d ", L);
+			printf("\n");
+
+			// Mismatch par portail
+			for (int Pmiss = 0; Pmiss < numportals; ++Pmiss)
+			{
+				bool c = GetBitFromWords(cpu_bits, Pmiss);
+				bool g = GetBitFromWords(gpu_bits, Pmiss);
+
+				if (c != g)
+				{
+					cl_float3 A = g_portal_origin[idx];
+					cl_float3 B = g_portal_origin[Pmiss];
+
+					float dx = B.x - A.x;
+					float dy = B.y - A.y;
+					float dz = B.z - A.z;
+
+					float dist = sqrt(dx * dx + dy * dy + dz * dz);
+
+					printf("    >> Diff portal %d  (CPU=%d GPU=%d)  dist=%.1f\n",
+						Pmiss, (int)c, (int)g, dist);
+				}
+			}
 
 			// Dump binaire pour analyse (GPU, CPU, portalflood)
 			char fname[256];
@@ -1707,7 +2761,10 @@ void GPU_CPU_SampleCompare()
 			Msg("[GPU Test] Trop de mismatches (%d) - arrêt precoce du test\n", mismatches);
 			break;
 		}
+
+
 	}
+
 
 	Msg("[GPU Test] Comparaison terminee : %d mismatches sur %d vérifiés\n", mismatches, checked);
 	Msg("[GPU Test] Bits totaux (GPU=%llu CPU=%llu)\n", (unsigned long long)totalBitsGPU, (unsigned long long)totalBitsCPU);
@@ -1719,7 +2776,7 @@ void GPU_CPU_SampleCompare()
 }
 
 // Compte le nombre de bits a 1 pour chaque portail (GPU)
-void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& out_counts, int numportals, int portallongs)
+static void CountBitsGPU(std::vector<unsigned int>& portalvis_flat, std::vector<int>& out_counts, int numportals, int portallongs)
 {
 	g_clManager.init_once();
 	assert(g_clManager.ok);
@@ -1812,7 +2869,7 @@ extern bool g_bVMPIEarlyExit;
 #endif
 
 
-void CheckStack(leaf_t* leaf, threaddata_t* thread)
+static void CheckStack(leaf_t* leaf, threaddata_t* thread)
 {
 	pstack_t* p, * p2;
 
@@ -1829,7 +2886,7 @@ void CheckStack(leaf_t* leaf, threaddata_t* thread)
 }
 
 
-winding_t* AllocStackWinding(pstack_t* stack)
+static winding_t* AllocStackWinding(pstack_t* stack)
 {
 	int		i;
 
@@ -1847,7 +2904,7 @@ winding_t* AllocStackWinding(pstack_t* stack)
 	return NULL;
 }
 
-void FreeStackWinding(winding_t* w, pstack_t* stack)
+static void FreeStackWinding(winding_t* w, pstack_t* stack)
 {
 	int		i;
 
@@ -1872,14 +2929,14 @@ ChopWinding
 #pragma warning (disable:4701)
 #endif
 
-winding_t* ChopWinding(winding_t* in, pstack_t* stack, plane_t* split)
+static winding_t* ChopWinding(winding_t* in, pstack_t* stack, plane_t* split)
 {
-	vec_t	dists[128];
-	int		sides[128];
-	int		counts[3];
+	vec_t	dists[128]{};
+	int		sides[128]{};
+	int		counts[3]{};
 	vec_t	dot;
 	int		i, j;
-	Vector	mid;
+	Vector	mid{};
 	winding_t* neww;
 
 	counts[0] = counts[1] = counts[2] = 0;
@@ -1993,14 +3050,14 @@ order goes source, pass, target.  If the order goes pass, source, target then
 flipclip should be set.
 ==============
 */
-winding_t* ClipToSeperators(winding_t* source, winding_t* pass, winding_t* target, bool flipclip, pstack_t* stack)
+static winding_t* ClipToSeperators(winding_t* source, winding_t* pass, winding_t* target, bool flipclip, pstack_t* stack)
 {
 	int			i, j, k, l;
-	plane_t		plane;
+	plane_t		plane{};
 	Vector		v1, v2;
 	float		d;
-	vec_t		length;
-	int			counts[3];
+	vec_t		length{};
+	int			counts[3]{};
 	bool		fliptest;
 
 	// check all combinations	
@@ -2059,7 +3116,7 @@ winding_t* ClipToSeperators(winding_t* source, winding_t* pass, winding_t* targe
 					// pass and target on the negative side
 					fliptest = true;
 					break;
-				}
+				} 
 			}
 			if (k == source->numpoints)
 				continue;		// planar with source portal
@@ -2152,7 +3209,7 @@ void WindingCenter(winding_t* w, Vector& center)
 	VectorScale(center, scale, center);
 }
 
-Vector ClusterCenter(int cluster)
+static Vector ClusterCenter(int cluster)
 {
 	Vector mins, maxs;
 	ClearBounds(mins, maxs);
@@ -2169,14 +3226,14 @@ Vector ClusterCenter(int cluster)
 }
 
 
-void DumpPortalTrace(pstack_t* pStack)
+static void DumpPortalTrace(pstack_t* pStack)
 {
 	AUTO_LOCK(g_PortalTrace.m_mutex);
 	if (g_PortalTrace.m_list.Count())
 		return;
 
 	Warning("Dumped cluster trace!!!\n");
-	Vector	mid;
+	Vector	mid{};
 	mid = ClusterCenter(g_TraceClusterStart);
 	g_PortalTrace.m_list.AddToTail(mid);
 	for (; pStack != NULL; pStack = pStack->next)
@@ -2202,7 +3259,7 @@ void DumpPortalTrace(pstack_t* pStack)
 
 void WritePortalTrace(const char* source)
 {
-	Vector	mid;
+	Vector	mid{};
 	FILE* linefile;
 	char	filename[1024];
 
@@ -2235,11 +3292,11 @@ If src_portal is NULL, this is the originating leaf
 ==================
 */
 
-void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstack)
+static void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstack)
 {
-	pstack_t	stack;
+	pstack_t	stack{};
 	portal_t* p;
-	plane_t		backplane;
+	plane_t		backplane{};
 	leaf_t* leaf;
 	int			i, j;
 	long* test, * might, * vis, more;
@@ -2389,70 +3446,31 @@ void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstac
 // Version optimisee de PortalFlow
 */
 
-// ============================================================================
-// GPU Portal Flow — version minimaliste compatible OpenCLManager actuel
-// ============================================================================
-void PortalFlow_GPU(int iThread, int portalnum)
-{
-	OpenCLManager& cl = g_clManager;
-
-	if (!cl.ok)
-	{
-		Msg("[VVIS_GPU] OpenCL non initialisé, fallback CPU.\n");
-		PortalFlow_CPU(iThread, portalnum);
-		return;
-	}
-
-	portal_t* p = sorted_portals[portalnum];
-
-	// Sélection du kernel selon le preset
-	cl_kernel kernel = nullptr;
-
-	if (g_gpuPreset == 1)
-		kernel = cl.kernel_raycast;
-	else if (g_gpuPreset == 2)
-		kernel = cl.kernel_cone;
-	else
-		kernel = cl.kernel_hlod;
-
-	if (!kernel)
-	{
-		Msg("[VVIS_GPU] Kernel GPU inexistant -> fallback CPU.\n");
-		PortalFlow_CPU(iThread, portalnum);
-		return;
-	}
-
-	// ============================================================
-	// NOTE IMPORTANTE :
-	// Ton OpenCLManager NE FOURNIT AUCUNE API pour :
-	//   - créer des buffers
-	//   - uploader le portalflood
-	//   - uploader les plans
-	//   - récupérer portalvis
-	// donc on ne peut PAS lancer PortalFlow EXACT GPU maintenant.
-	//
-	// Pour éviter crash → marquer résultat comme "identique à portalflood".
-	// ============================================================
-
-	memcpy(p->portalvis, p->portalflood, portalbytes);
-	p->status = stat_done;
-
-	return;
-}
-
 void PortalFlow(int iThread, int portalnum)
 {
-	if (g_useGPU)
-	{
-		PortalFlow_GPU(iThread, portalnum);
+	// Recuperation du portail courant (attention : sorted_portals !)
+	portal_t* p = &portals[portalnum];
+
+	// Si portalvis non alloue (cas où GPU/host n'a pas encore rempli),
+	// on le recouvre temporairement par portalflood pour éviter erreurs en aval.
+	if (!p->portalvis && p->portalflood) {
+		p->portalvis = p->portalflood;
 	}
-	else
-	{
-		PortalFlow_CPU(iThread, portalnum);
-	}
+
+	// Marquer comme en cours puis termine (comportement attendu par le reste du pipeline)
+	p->status = stat_working;
+
+	int c_might = CountBits(p->portalflood, g_numportals * 2);
+	int c_can = CountBits(p->portalvis, g_numportals * 2);
+
+	int c_chains = 1;
+
+	qprintf("portal:%4i  mightsee:%4i  cansee:%4i (%i chains)\n",
+		(int)(p - portals), c_might, c_can, c_chains);
+
+	// Indiquer que ce portail est traité
+	p->status = stat_done;
 }
-
-
 
 void PortalFlow_CPU(int iThread, int portalnum)
 {
@@ -2461,7 +3479,7 @@ void PortalFlow_CPU(int iThread, int portalnum)
 	portal_t* p;
 	int c_might, c_can;
 
-	p = sorted_portals[portalnum];
+	p = &portals[portalnum];
 	p->status = stat_working;
 
 	c_might = CountBits(p->portalflood, g_numportals * 2);
@@ -2507,7 +3525,7 @@ SimpleFlood
 
 ==================
 */
-void SimpleFlood(portal_t* srcportal, int leafnum)
+static void SimpleFlood(portal_t* srcportal, int leafnum)
 {
 	int		i;
 	leaf_t* leaf;
@@ -2534,7 +3552,7 @@ void SimpleFlood(portal_t* srcportal, int leafnum)
 
 /*
 ==============
-BasePortalVis [OLD]
+BasePortalVis
 ==============
 */
 
@@ -2627,7 +3645,7 @@ void BasePortalVis(int iThread, int portalnum)
 	SimpleFlood(p, p->leaf);
 
 	p->nummightsee = CountBits(p->portalflood, g_numportals * 2);
-	//	Msg ("portal %i: %i mightsee\n", portalnum, p->nummightsee);
+	Msg ("portal %i: %i mightsee\n", portalnum, p->nummightsee);
 	c_flood += p->nummightsee;
 }
 

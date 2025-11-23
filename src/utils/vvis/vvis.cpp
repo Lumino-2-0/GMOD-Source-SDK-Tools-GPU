@@ -8,17 +8,12 @@
 #include "vis.h"
 #include "threads.h"
 #include "stdlib.h"
-#include "pacifier.h"
-#include "vmpi.h"
-#include "mpivis.h"
 #include "tier1/strtools.h"
 #include "collisionutils.h"
 #include "tier0/icommandline.h"
-#include "vmpi_tools_shared.h"
 #include "ilaunchabledll.h"
 #include "tools_minidump.h"
 #include "loadcmdline.h"
-#include "byteswap.h"
 #include "flow_gpu.h"
 #include "lib_loader.h"
 
@@ -138,11 +133,16 @@ void BuildTracePortals( int clusterStart )
 	}
 }
 
-void SortPortals(void)
+void SortPortals (void)
 {
-	// GPU version — disable CPU sorting entirely
-	for (int i = 0; i < g_numportals * 2; i++)
+	int		i;
+	
+	for (i=0 ; i<g_numportals*2 ; i++)
 		sorted_portals[i] = &portals[i];
+
+	if (nosort)
+		return;
+	qsort (sorted_portals, g_numportals*2, sizeof(sorted_portals[0]), PComp);
 }
 
 
@@ -251,32 +251,17 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 			}
 		}
 	}
+	int numbytes = CompressVis( uncompressed, compressed );
 
-	int numbytes = CompressVis(uncompressed, compressed);
+	byte *dest = vismap_p;
+	vismap_p += numbytes;
+	
+	if (vismap_p > vismap_end)
+		Error ("Vismap expansion overflow");
 
-	// SAFETY FIX — clamp output
-	if (numbytes <= 0 || numbytes > MAX_MAP_LEAFS / 8)
-	{
-		Warning("CompressVis returned invalid size %d for cluster %d — forcing safe size\n",
-			numbytes, clusternum);
-		numbytes = MAX_MAP_LEAFS / 8;
-	}
+	dvis->bitofs[clusternum][DVIS_PVS] = dest-vismap;
 
-	// SAFETY FIX — avoid writing past vismap
-	byte* dest = vismap_p;
-	if (dest + numbytes > vismap_end)
-	{
-		Error("Vismap overflow on cluster %d (dest=%p size=%d)\n",
-			clusternum, dest, numbytes);
-	}
-
-	dvis->bitofs[clusternum][DVIS_PVS] = dest - vismap;
-
-	// write data safely
-	memcpy(dest, compressed, numbytes);
-
-	// advance output pointer
-	vismap_p = dest + numbytes;
+	memcpy( dest, compressed, numbytes );
 
 	// check vis data
 	byte verify[MAX_MAP_LEAFS / 8];
@@ -323,49 +308,55 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 CalcPortalVis
 ==================
 */
-void CalcPortalVis() {
-	if (fastvis) {
-		for (int i = 0; i < g_numportals * 2; i++) {
+void CalcPortalVis()
+{
+	if (fastvis)
+	{
+		for (int i = 0; i < g_numportals * 2; i++)
+		{
 			portals[i].portalvis = portals[i].portalflood;
 			portals[i].status = stat_done;
 		}
 		return;
 	}
 
-	// Lire options runtime depuis la ligne de commande
+	// Options CLI
 	g_bDebugMode = (CommandLine()->FindParm("-debug") != 0);
 	g_bTryGPU = (CommandLine()->FindParm("-TryGPU") != 0);
 
-	if (CommandLine()->CheckParm("-nogpu")) {
-		// Forcer le CPU
+	if (CommandLine()->CheckParm("-nogpu"))
+	{
+		Msg("[VVIS] -nogpu détecté → mode CPU\n");
 		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
+		return;
 	}
-	else {
-		// Tentative GPU
-		g_clManager.init_once();
-		// Si l'init OpenCL a échoué, init_once marque g_clManager.ok=false
-		if (!g_clManager.ok) {
-			Msg("[OpenCL|GPU-Mod] OpenCL non disponible, fallback CPU\n");
-			RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
-		}
-		else {
-			for (int i = 0; i < g_numportals * 2; ++i)
-			{
-				BasePortalVis(0, i);
-			}
-			MassiveFloodFillGPU();
-			// Optionnel : échantillonnage CPU vs GPU pour vérification
-			if (g_bTryGPU) {
-				GPU_CPU_SampleCompare();
-			}
-		}
+
+	// Init OpenCL
+	if (!g_clManager.init_once())
+	{
+		Msg("[VVIS] OpenCL indisponible → fallback CPU\n");
+		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
+		return;
 	}
+
+	// GPU path
+	Msg("[VVIS] Lancement PortalFlow_GPU...\n");
+	PortalFlow_GPU();
+
+	// Vérification optionnelle
+	if (g_bTryGPU)
+		GPU_CPU_SampleCompare();
 }
 
-void CalcVisTrace(void) {
+void CalcVisTrace(void)
+{
 	RunThreadsOnIndividual(g_numportals * 2, true, BasePortalVis);
 	BuildTracePortals(g_TraceClusterStart);
-	RunThreadsOnIndividual(g_numportals, true, PortalFlow);
+
+	if (CommandLine()->CheckParm("-nogpu") || !g_clManager.ok)
+		RunThreadsOnIndividual(g_numportals, true, PortalFlow_CPU);
+	else
+		PortalFlow_GPU();
 }
 
 
@@ -524,8 +515,6 @@ void LoadPortals (char *name)
 	leaflongs = (leafbytes + (int)sizeof(long) - 1) / (int)sizeof(long); // rounds up to whole long words
 
 	portalbytes = ((g_numportals * 2 + 7) >> 3);        // ceil((numportals*2) / 8)
-
-
 	portallongs = (portalbytes + (int)sizeof(long) - 1) / (int)sizeof(long);
 
 // each file portal is split into two memory portals

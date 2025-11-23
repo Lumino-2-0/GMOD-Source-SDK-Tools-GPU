@@ -78,6 +78,14 @@ struct OpenCLManager {
     cl_mem buf_leaf_count = nullptr;
     cl_mem buf_leaf_portals = nullptr;
     cl_mem buf_portal_leaf = nullptr;
+    cl_mem buf_leafvis = nullptr;
+
+    // === Kernels FlowGPU  ===
+    cl_kernel kernel_raycast = nullptr;
+    cl_kernel kernel_cone = nullptr;
+    cl_kernel kernel_hlod = nullptr;
+    cl_kernel kernel_bfs = nullptr;
+
 
 };
 

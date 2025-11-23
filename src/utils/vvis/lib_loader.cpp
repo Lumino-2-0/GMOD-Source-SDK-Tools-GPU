@@ -40,7 +40,11 @@ bool CheckRequiredDLLs()
         printf("\n[WARNING] filesystem_stdio.dll is missing.\n");
         printf("[INFO] It should be extracted automatically unless '-NoCheckLib' was used.\n");
         printf("[INFO] If extraction failed, delete the 'bin/' folder and relaunch vvis_GPU.\n\n");
-        // pas fatal → extraction peut toujours le créer
+        // pas fatal 
+        // 
+        // 
+        // 
+        // extraction peut toujours le créer
     }
 
     return ok;
