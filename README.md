@@ -8,7 +8,6 @@ So yes, I did it, I created a GPU version of the VVIS tool specifically for GMOD
 Source code for **Source SDK 2013 GMOD (64-bit)** — custom-optimized build tools for **VBSP**, **VVIS**, and **VRAD**, primarily targeting performance improvements, GPU acceleration, and modern compiler compatibility.
 
 This repository is an experimental fork based on [Ficool2’s Source SDK 2013 fork](https://github.com/ficool2/source-sdk-2013), adapted specifically for **Garry’s Mod (64-bit)**.  
-It serves as a **research and testing environment**, not a finalized SDK release.
 
 ---
 
