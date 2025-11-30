@@ -1,6 +1,10 @@
-# Source SDK 2013 — Outils GMOD (Optimisés 64-bit)
+# Source SDK 2013 — GMOD Tools X64 Mod
+
+# NE L'UTILISEZ PAS POUR L'INSTANT !
+
 ## Ce projet est en cours de développement, mais l'optimisation GPU/OpenCL est presque fonctionnelle !
-Ça y est, j'ai créé une version GPU de l'outil VVIS spécialement pour GMOD. Elle utilise OpenCL pour la compatibilité GPU, et pour une grande carte ouverte comme ma Kindercity (une grande ville avec beaucoup d'éléments à l'intérieur), la compilation avec ma carte graphique (RTX 4090) n'a pris que 2 secondes. Alors, essayez-la et profitez de cette fonctionnalité ! Je comparerai de nombreuses cartes avec la version originale de VVIS et ma version GPU pour identifier les différences et les points à optimiser. Mais pour l'instant, ça fonctionne, et le plus dur est fait. Ne vous emballez pas trop vite, car comme je l'ai dit, c'est PRESQUE terminé, mais pas encore tout à fait. Il vous faudra donc patienter plusieurs semaines, voire des mois, ou bien me donner un coup de main :)
+
+Alors oui, j'y suis presque arrivé : une version GPU de l'outil VVIS spécialement conçue pour GMOD. Elle utilise OpenCL pour la compatibilité GPU et pour les grandes cartes ouvertes comme ma Kindercity (une grande ville avec beaucoup plus d'éléments à l'intérieur). Alors, essayez-la et profitez de cette fonctionnalité. Je comparerai de nombreuses cartes avec la version originale de VVIS et ma version GPU afin d'identifier les différences et les points à optimiser. Pour l'instant, elle fonctionne avec une optimisation minimale, et le plus dur est fait. Ne vous emballez pas trop vite, car comme je l'ai dit, c'est PRESQUE terminé, mais pas encore tout à fait. Il vous faudra donc patienter plusieurs semaines, voire plusieurs mois, ou bien me donner un coup de main :)
 
 
 Code source du **Source SDK 2013 GMOD (64 bits)** — outils VBSP, VVIS et VRAD personnalisés et optimisés, visant principalement à l'expérimentation, aux tests de performance et à l’intégration GPU via **OpenCL**.
