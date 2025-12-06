@@ -1,1 +1,0 @@
-﻿#define IDR_FSSTDIO 103

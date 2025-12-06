@@ -1,90 +1,182 @@
 ﻿#pragma once
-
-#include <mutex>
-#include <string>
 #include <CL/cl.h>
-#include <vector>
-#include <iostream>
-#include <sstream>
-#include <cstdint>
+#include "bsplib.h"
 
-// Structures partagees avec le kernel OpenCL
-struct cl_plane_t {
-    float normal[3];
-    float dist;
+// ============================
+// FLOAT3 / FLOAT4 STRUCTURES
+// ============================
+
+typedef struct { float x, y, z; } float3;
+typedef struct { float x, y, z, w; } float4;
+
+// ============================
+// KERNEL INLINE (OPTION A + B1)
+// ============================
+
+static const char* g_gpuPortalFlowKernels = R"CLC(
+
+//
+// ===============================================
+// KERNEL 1 — GEOMETRIC PRUNE (optionnel)
+// ===============================================
+//
+__kernel void separators(
+    __global const float3* origins,
+    __global const float* radius,
+    __global const float4* planes,
+    __global const float3* winding4,
+    __global int* outMask,
+    int portalIndex,
+    int portalCount,
+    int portalLongs
+)
+{
+    int j = get_global_id(0);
+    if(j >= portalCount) return;
+
+    int word = j >> 5;
+    int bit  = 1 << (j & 31);
+    int offset = portalIndex * portalLongs + word;
+
+    int old = outMask[offset];
+    old |= bit;
+
+    float3 a = origins[portalIndex];
+    float3 b = origins[j];
+
+    float dx = b.x - a.x;
+    float dy = b.y - a.y;
+    float dz = b.z - a.z;
+
+    float d2 = dx*dx + dy*dy + dz*dz;
+    float rsum = radius[portalIndex] + radius[j];
+
+    if(d2 > (rsum*rsum))
+        old &= ~bit;
+
+    outMask[offset] = old;
+}
+
+//
+// ===============================================
+// KERNEL 2 — FULL PVS FLOOD-FILL (IDENTIQUE CPU)
+// ===============================================
+//
+__kernel void portalFlowIter(
+    __global int* mask,
+    __global int* mightsee,
+    __global int* changed,
+    int longs,
+    int pCount)
+{
+    int p = get_global_id(0);
+    if (p >= pCount) return;
+
+    int baseP = p * longs;
+    int updated = 0;
+
+    // pour chaque q POSSIBLE
+    for (int q = 0; q < pCount; q++)
+    {
+        int byte = q >> 5;
+        int bit  = 1 << (q & 31);
+
+        // si q n'est PAS dans mightSee[p], skip
+        if ((mightsee[baseP + byte] & bit) == 0)
+            continue;
+
+        int baseQ = q * longs;
+        int visible = 1;
+
+        // test d'intersection
+        for (int i = 0; i < longs; i++)
+        {
+            if ((mask[baseP + i] & mask[baseQ + i]) == 0)
+            {
+                visible = 0;
+                break;
+            }
+        }
+
+        if (!visible)
+            continue;
+
+        // SETBIT(mask[p], q)
+        int old = mask[baseP + byte];
+        int newv = old | bit;
+
+        if (newv != old)
+        {
+            mask[baseP + byte] = newv;
+            updated = 1;
+        }
+    }
+
+    if (updated)
+        atomic_add(changed, 1);
+}
+
+)CLC";
+
+
+
+// ========================================================
+// STRUCTURES GPU
+// ========================================================
+
+struct GPUPortalFlowCLContext
+{
+    bool initialized;
+
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+
+    cl_kernel k_separators;
+    cl_kernel k_merge;
+    cl_kernel k_flowIter;
+
+    cl_mem d_portalVis;
+    cl_mem d_origins;
+    cl_mem d_radius;
+    cl_mem d_planes;
+    cl_mem d_winding4;
+
+    cl_mem d_frontier;
+    cl_mem d_nextFrontier;
+    cl_mem d_mightSee;
+    cl_mem d_changed;
+
+    int portalCount;
+    int portalLongs;
 };
 
-struct cl_leafportal_t {
-    int leaf;
-    int portal;
-};
+extern GPUPortalFlowCLContext g_gpuPF;
 
-struct cl_winding_t {
-    int numpoints;
-    float points[16][3]; // MAX_POINTS_ON_FIXED_WINDING = 16
-};
+// ========================================================
+// API GPU PUBLIC
+// ========================================================
+bool InitOpenCL_PortalFlow();
+void ShutdownOpenCL_PortalFlow();
+bool AllocatePortalFlowBuffers();
 
-struct cl_portal_t {
-    cl_plane_t plane;
-    int leaf;
-    float origin[3];
-    float radius;
-    int winding_idx;
-};
+bool PortalFlow_GPU(int portalIdx, portal_t* p);
+void PortalFlow_GPU_Wrapper(int thread, int portalIndex);
+void PortalFlow_FullGPU();
 
-struct cl_leaf_t {
-    int first_portal;
-    int num_portals;
-};
+// For -TryGPU comparison, implemented in flow.cpp
+void GPU_CPU_SampleCompare();
 
-struct OpenCLManager {
-    cl_platform_id platform = nullptr;
-    cl_device_id device = nullptr;
-    cl_context context = nullptr;
-    cl_command_queue queue = nullptr;
-    cl_program program = nullptr;
-    cl_kernel floodfill_kernel = nullptr;
-    cl_kernel countbits_kernel = nullptr;
+// ======================================================================
+// GPU FULL PORTAL FLOW SUPPORT (Pipeline BFS)
+// ======================================================================
 
-    // prune kernels
-    cl_kernel tiny_kernel = nullptr;
-    cl_kernel backface_kernel = nullptr;
-    cl_kernel angle_kernel = nullptr;
-    cl_kernel convexity_kernel = nullptr;
-    cl_kernel frustum_kernel = nullptr;
-    cl_kernel distance_prune_kernel = nullptr;
-    cl_kernel opposite_prune_kernel = nullptr;
-    cl_kernel sector_prune_kernel = nullptr;
-    cl_kernel z_occlusion_kernel = nullptr;
-    cl_kernel solid_angle_kernel = nullptr;
-    cl_kernel pyramid_sector_kernel = nullptr;
-    // prune buffers
-    cl_mem buf_portal_origin = nullptr;
-    cl_mem buf_portal_normal = nullptr;
-    cl_mem buf_portal_radius = nullptr;
-    cl_mem buf_portalvis = nullptr;
+typedef struct {
+    cl_mem d_frontier;      // int[portalCount] : actifs à cette iteration
+    cl_mem d_nextFrontier;  // int[portalCount]
+    cl_mem d_changed;       // int(1) : indique si propagation continue
+    cl_mem d_mightSee;      // int[portalCount * longs]
+} GPUPortalFlowFull;
 
-    bool ok = false;
-    std::mutex init_mutex;
-    void log(const std::string& s) { std::cout << "[OpenCL|GPU-Mod] " << s << std::endl; }
-    void init_once();
-    void cleanup();
-
-    // NEW: leaf-based propagation kernel
-    cl_kernel leaf_kernel = nullptr;
-
-    // NEW: GPU buffers for leaf propagation
-    cl_mem buf_leaf_first = nullptr;
-    cl_mem buf_leaf_count = nullptr;
-    cl_mem buf_leaf_portals = nullptr;
-    cl_mem buf_portal_leaf = nullptr;
-
-};
-
-
-
-extern int g_gpuPreset;
-
-extern OpenCLManager g_clManager;
-
-void MassiveFloodFillGPU();

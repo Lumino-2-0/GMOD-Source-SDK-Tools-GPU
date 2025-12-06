@@ -9,8 +9,6 @@
 #include "threads.h"
 #include "stdlib.h"
 #include "pacifier.h"
-#include "vmpi.h"
-#include "mpivis.h"
 #include "tier1/strtools.h"
 #include "collisionutils.h"
 #include "tier0/icommandline.h"
@@ -20,7 +18,6 @@
 #include "loadcmdline.h"
 #include "byteswap.h"
 #include "flow_gpu.h"
-#include "lib_loader.h"
 
 int g_numportals;
 int portalclusters;
@@ -47,8 +44,6 @@ double g_VisRadius = 4096.0 * 4096.0;
 bool g_bLowPriority = false;
 bool g_bDebugMode = false;
 bool g_bTryGPU = false;
-
-extern void GPU_CPU_SampleCompare();
 
 //=============================================================================
 
@@ -313,45 +308,43 @@ static int CompressAndCrosscheckClusterVis( int clusternum )
 CalcPortalVis
 ==================
 */
-void CalcPortalVis() {
-	if (fastvis) {
-		for (int i = 0; i < g_numportals * 2; i++) {
+void CalcPortalVis()
+{
+	if (fastvis)
+	{
+		for (int i = 0; i < g_numportals * 2; i++)
+		{
 			portals[i].portalvis = portals[i].portalflood;
 			portals[i].status = stat_done;
 		}
 		return;
 	}
 
-	// Lire options runtime depuis la ligne de commande
-	g_bDebugMode = (CommandLine()->FindParm("-debug") != 0);
-	g_bTryGPU = (CommandLine()->FindParm("-TryGPU") != 0);
-
-	if (CommandLine()->CheckParm("-nogpu")) {
-		// Forcer le CPU
+	// Init GPU
+	if (!InitOpenCL_PortalFlow())
+	{
+		// fallback
 		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
+		return;
 	}
-	else {
-		// Tentative GPU
-		g_clManager.init_once();
-		// Si l'init OpenCL a échoué, init_once marque g_clManager.ok=false
-		if (!g_clManager.ok) {
-			Msg("[OpenCL|GPU-Mod] OpenCL non disponible, fallback CPU\n");
-			RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
-		}
-		else {
-			MassiveFloodFillGPU();
-			// Optionnel : échantillonnage CPU vs GPU pour vérification
-			if (g_bTryGPU) {
-				GPU_CPU_SampleCompare();
-			}
-		}
-	}
+
+	AllocatePortalFlowBuffers();
+
+	// --------------------------
+	// FULL GPU PORTAL FLOW
+	// --------------------------
+
+	Msg("[GPU-VIS] Starting FULL GPU PortalFlow...\n");
+
+	PortalFlow_FullGPU();
+
+	Msg("[GPU-VIS] FULL GPU PortalFlow done.\n");
 }
 
 void CalcVisTrace(void) {
 	RunThreadsOnIndividual(g_numportals * 2, true, BasePortalVis);
 	BuildTracePortals(g_TraceClusterStart);
-	RunThreadsOnIndividual(g_numportals, true, PortalFlow);
+	RunThreadsOnIndividual(g_numportals, true, PortalFlow_CPU);
 }
 
 
@@ -364,16 +357,8 @@ void CalcVis (void)
 {
 	int		i;
 
-#ifdef MPI
-	if (g_bUseMPI) 
-	{
-		RunMPIBasePortalVis();
-	}
-	else 
-#endif
-	{
-	    RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
-	}
+    RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
+	
 
 	SortPortals ();
 
@@ -449,45 +434,8 @@ void LoadPortals (char *name)
 	FILE *f;
 
 	// Open the portal file.
-#ifdef MPI
-	if ( g_bUseMPI )
-	{
-		// If we're using MPI, copy off the file to a temporary first. This will download the file
-		// from the MPI master, then we get to use nice functions like fscanf on it.
-		char tempPath[MAX_PATH], tempFile[MAX_PATH];
-		if ( GetTempPath( sizeof( tempPath ), tempPath ) == 0 )
-		{
-			Error( "LoadPortals: GetTempPath failed.\n" );
-		}
-
-		if ( GetTempFileName( tempPath, "vvis_portal_", 0, tempFile ) == 0 )
-		{
-			Error( "LoadPortals: GetTempFileName failed.\n" );
-		}
-
-		// Read all the data from the network file into memory.
-		FileHandle_t hFile = g_pFileSystem->Open(name, "r");
-		if ( hFile == FILESYSTEM_INVALID_HANDLE )
-			Error( "LoadPortals( %s ): couldn't get file from master.\n", name );
-
-		CUtlVector<char> data;
-		data.SetSize( g_pFileSystem->Size( hFile ) );
-		g_pFileSystem->Read( data.Base(), data.Count(), hFile );
-		g_pFileSystem->Close( hFile );
-
-		// Dump it into a temp file.
-		f = fopen( tempFile, "wt" );
-		fwrite( data.Base(), 1, data.Count(), f );
-		fclose( f );
-
-		// Open the temp file up.
-		f = fopen( tempFile, "rSTD" ); // read only, sequential, temporary, delete on close
-	}
-	else
-#endif
-	{
-		f = fopen( name, "r" );
-	}
+	f = fopen( name, "r" );
+	
 
 	if ( !f )
 		Error ("LoadPortals: couldn't read %s\n",name);
@@ -1013,15 +961,17 @@ int ParseCommandLine( int argc, char **argv )
 
 		else if (!Q_stricmp(argv[i], "-nogpu"))
 		{
-			// Forcer le fallback CPU
+			Msg("GPU désactivé, utilisation du CPU.\n");
 		}
 		else if (!Q_stricmp(argv[i], "-TryGPU"))
 		{
-			// Permet de comparer les résultats GPU vs CPU pour verification
+			Msg("Mode de comparaison GPU/CPU active (TryGPU).\n");
+			g_bTryGPU = true;
 		}
 		else if (!Q_stricmp(argv[i], "-debug"))
 		{
-			// Active les messages de debug GPU/OpenCL
+			Msg("Mode debug GPU/OpenCL active.\n");
+			g_bDebugMode = true;
 		}
 		else if (!Q_stricmp(argv[i], "-NoCheckLib"))
 		{
@@ -1051,7 +1001,7 @@ int ParseCommandLine( int argc, char **argv )
 		// NOTE: the -mpi checks must come last here because they allow the previous argument 
 		// to be -mpi as well. If it game before something else like -game, then if the previous
 		// argument was -mpi and the current argument was something valid like -game, it would skip it.
-#ifdef MPI
+
 		else if ( !Q_strncasecmp( argv[i], "-mpi", 4 ) || !Q_strncasecmp( argv[i-1], "-mpi", 4 ) )
 		{
 			// Mise a jour 26/08/2025 : desactivation du support de MPI car pas compatible avec le compilateur GMOD
@@ -1059,7 +1009,6 @@ int ParseCommandLine( int argc, char **argv )
 				Msg("MPI is not compatible with GMOD compiler\n");
 			Msg("The MPI will not be used even if you actived the option :) \n");
 		}
-#endif
 		else if (argv[i][0] == '-')
 		{
 			Warning("VBSP: Unknown option \"%s\"\n\n", argv[i]);
@@ -1096,9 +1045,9 @@ void PrintUsage( int argc, char **argv )
 		"\n"
 		"  -v (or -verbose): Turn on verbose output (also shows more command\n"
 		"  -fast           : Only do first quick pass on vis calculations.\n"
-#ifdef MPI
+
 		"  -mpi            : Use VMPI to distribute computations.\n"
-#endif
+
 		"  -low            : Run as an idle-priority process.\n"
 		"                    env_fog_controller specifies one.\n"
 		"\n"
@@ -1108,9 +1057,9 @@ void PrintUsage( int argc, char **argv )
 		"Other options:\n"
 		"  -novconfig      : Don't bring up graphical UI on vproject errors.\n"
 		"  -radius_override: Force a vis radius, regardless of whether an\n"
-#ifdef MPI
+
 		"  -mpi_pw <pw>    : Use a password to choose a specific set of VMPI workers.\n"
-#endif
+
 		"  -threads        : Control the number of threads vbsp uses (defaults to the #\n"
 		"                    or processors on your machine).\n"
 		"  -nosort         : Don't sort portals (sorting is an optimization).\n"
@@ -1122,8 +1071,8 @@ void PrintUsage( int argc, char **argv )
 		"  -nox360		   : Disable generation Xbox360 version of vsp (default)\n"
 		"  -nogpu          : Forcer l'utilisation du fallback version CPU (Old).\n\n"
 		"############################################################# GPU MOD OPTIONS ############################################################# \n\n"
-		"  -TryGPU		   : Permet de comparer les résultats GPU vs CPU pour verification (peut ralentir le processus de quelques secondes/minutes).\n"
-		"  -debug 		   : Active les messages de debug GPU/OpenCL.\n"
+		"  -TryGPU		   : Permet de comparer les resultats GPU vs CPU pour verification (peut ralentir le processus de quelques secondes/minutes).\n"
+		"  -debug 		   : Active les messages de debug GPU/OpenCL. (peut ralentir considerablement le temps de compilation, ne le mettre que si necessaire)\n"
 		"  -PresetGPU      : Choisit l'agressivite de l'optimisation GPU.\n"
 		"       0 = Soft (quasi-identique VVIS original)\n"
 		"       1 = Normal\n"
@@ -1202,16 +1151,6 @@ int RunVVis( int argc, char **argv )
 	}
 
 	start = Plat_FloatTime();
-
-#ifdef MPI
-	if (!g_bUseMPI)
-#endif
-	{
-		// Setup the logfile.
-		char logFile[512];
-		_snprintf( logFile, sizeof(logFile), "%s.log", source );
-		SetSpewFunctionLogFile( logFile );
-	}
 
 	// Run in the background?
 	if( g_bLowPriority )
@@ -1327,12 +1266,6 @@ int RunVVis( int argc, char **argv )
 		{
 			Error("Invalid cluster trace: %d to %d, valid range is 0 to %d\n", g_TraceClusterStart, g_TraceClusterStop, portalclusters-1 );
 		}
-#ifdef MPI
-		if ( g_bUseMPI )
-		{
-			Warning("Can't compile trace in MPI mode\n");
-		}
-#endif
 		CalcVisTrace ();
 		WritePortalTrace(source);
 	}
@@ -1356,21 +1289,8 @@ main
 ===========
 */
 
-extern void EnsureAllLibs(bool noCheck);
-
 int main (int argc, char **argv)
 {
-	if (!CheckRequiredDLLs())
-	{
-		printf("[FATAL] Missing essential DLLs. VVIS_GPU cannot start.\n");
-		return 1; // stop proprement
-	}
-
-	// Auto-extract filesystem_stdio.dll (unless NoCheckLib)
-	if (!CommandLine()->CheckParm("-NoCheckLib"))
-	{
-		EnsureFilesystemOnly(false);
-	}
 
 	SetConsoleOutputCP(CP_UTF8);
 	CommandLine()->CreateCmdLine( argc, argv );
@@ -1379,33 +1299,5 @@ int main (int argc, char **argv)
 	InstallAllocationFunctions();
 	InstallSpewFunction();
 
-#ifdef MPI
-	VVIS_SetupMPI( argc, argv );
-#endif
-
-	// Install an exception handler.
-#ifdef MPI
-	if ( g_bUseMPI && !g_bMPIMaster )
-		SetupToolsMinidumpHandler( VMPI_ExceptionFilter );
-	else
-#endif
-	{
-		SetupDefaultToolsMinidumpHandler();
-	}
-
 	return RunVVis( argc, argv );
 }
-
-
-// When VVIS is used as a DLL (makes debugging vmpi vvis a lot easier), this is used to
-// get it going.
-class CVVisDLL : public ILaunchableDLL
-{
-public:
-	virtual int main( int argc, char **argv )
-	{
-		return ::main( argc, argv );
-	}
-};
-
-EXPOSE_SINGLE_INTERFACE( CVVisDLL, ILaunchableDLL, LAUNCHABLE_DLL_INTERFACE_VERSION );

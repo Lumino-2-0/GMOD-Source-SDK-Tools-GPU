@@ -18,8 +18,8 @@ struct plane_t {
     float dist;
 };
 
-#define MAX_POINTS_ON_WINDING   64
-#define MAX_POINTS_ON_FIXED_WINDING     16  // A ajuster pour correspondre a cl_winding_t
+#define MAX_POINTS_ON_WINDING 64
+#define MAX_POINTS_ON_FIXED_WINDING 16  
 
 struct winding_t {
     qboolean original;
@@ -91,6 +91,7 @@ void BasePortalVis(int iThread, int portalnum);
 void BetterPortalVis(int portalnum);
 void PortalFlow(int iThread, int portalnum);
 void PortalFlow_CPU(int iThread, int portalnum);
+bool PortalFlow_GPU(int portalIdx, portal_t* p);
 void WritePortalTrace(const char* source);
 
 extern portal_t* sorted_portals[MAX_MAP_PORTALS * 2];
