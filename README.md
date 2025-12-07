@@ -79,7 +79,7 @@ This project is **Windows-only** for now. Linux support is not native and will b
 ```bash
 git clone https://github.com/<your-username>/SourceSDK2013-GMOD-64Bit.git
 ```
-In *VS*, use ***Release*** configuration **(NOT DEBUG ONE !)** and you can debug it from the *"local Windows debugger"* option, there already is a config implemented. Or you can just compile a map with a simple ```cmd``` in the *"bin"* folder.
+In *VS*, use ***Release*** configuration **(NOT DEBUG CIONFIG!)**. You can then debug it using the *"local Windows debugger"* option, which is already configured. You can also compile a map with a simple command on the ```cmd``` in the *"bin"* folder.
 
 Compiled binaries will appear in:
 
