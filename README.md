@@ -78,10 +78,9 @@ This project is **Windows-only** for now. Linux support is not native and will b
 ### Building
 ```bash
 git clone https://github.com/<your-username>/SourceSDK2013-GMOD-64Bit.git
-cd SourceSDK2013-GMOD-64Bit
-cmake -B build -S . -A x64
-cmake --build build --config Release
 ```
+In *VS*, use ***Release*** configuration **(NOT DEBUG ONE !)** and you can debug it from the *"local Windows debugger"* option, there already is a config implemented. Or you can just compile a map with a simple ```cmd``` in the *"bin"* folder.
+
 Compiled binaries will appear in:
 
 ```
