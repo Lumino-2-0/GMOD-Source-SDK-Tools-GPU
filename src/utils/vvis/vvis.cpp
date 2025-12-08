@@ -1,4 +1,4 @@
-﻿//========= Copyright Valve Corporation, All rights reserved. ============//
+//========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: 
 // $NoKeywords: $
@@ -310,36 +310,113 @@ CalcPortalVis
 */
 void CalcPortalVis()
 {
+	// ============================================================
+	// 0 - FASTVIS (skips GPU & CPU work)
+	// ============================================================
 	if (fastvis)
 	{
 		for (int i = 0; i < g_numportals * 2; i++)
 		{
-			portals[i].portalvis = portals[i].portalflood;
-			portals[i].status = stat_done;
+			portal_t* P = sorted_portals[i];
+			P->portalvis = P->portalflood;
+			P->status = stat_done;
 		}
 		return;
 	}
 
-	// Init GPU
+	// ============================================================
+	// 1 - INIT GPU
+	// ============================================================
 	if (!InitOpenCL_PortalFlow())
 	{
-		// fallback
 		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
 		return;
 	}
 
-	AllocatePortalFlowBuffers();
+	// ============================================================
+	// 2 - BUILD LEAF->PORTAL TABLE BEFORE ALLOC
+	// ============================================================
+	BuildLeafPortalTable();
 
-	// --------------------------
-	// FULL GPU PORTAL FLOW
-	// --------------------------
+	// ============================================================
+	// 3 - ALLOC + UPLOAD GPU DATA
+	// ============================================================
+	if (!AllocatePortalFlowBuffers())
+	{
+		Warning("[GPU-VIS] GPU buffer alloc failed, fallback CPU.\n");
+		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
+		return;
+	}
 
+	// ============================================================
+	// 4 - RUN THE FULL GPU PORTAL FLOW
+	// ============================================================
 	Msg("[GPU-VIS] Starting FULL GPU PortalFlow...\n");
-
 	PortalFlow_FullGPU();
-
 	Msg("[GPU-VIS] FULL GPU PortalFlow done.\n");
+
+	// ============================================================
+	// 5 - TRYGPU MODE : CPU COMPARISON
+	// ============================================================
+	if (g_bTryGPU)
+	{
+		Msg("[GPU-VIS] Starting CPU PortalFlow for comparison (TryGPU mode)...\n");
+
+		int portalCount = g_numportals * 2;
+
+		// ----------- BACKUP GPU VIS FOR EACH PORTAL -----------
+		byte** backupVis = (byte**)malloc(portalCount * sizeof(byte*));
+
+		for (int pi = 0; pi < portalCount; ++pi)
+		{
+			portal_t* P = sorted_portals[pi];
+
+			backupVis[pi] = (byte*)malloc(portalbytes);
+			memcpy(backupVis[pi], P->portalvis, portalbytes);
+
+			// restore CPU initial conditions (portalflood)
+			memcpy(P->portalvis, P->portalflood, portalbytes);
+			P->status = stat_none;
+
+			// Auto-visible flag (CPU always sets this)
+			int byte = pi >> 5;
+			int bit = 1 << (pi & 31);
+			P->portalvis[byte] |= bit;
+		}
+
+		// ----------- RUN CPU PORTALFLOW -----------
+		RunThreadsOnIndividual(portalCount, true, PortalFlow_CPU);
+
+		// ----------- COMPARE GPU vs CPU RESULTS -----------
+		int totalDiff = 0;
+
+		for (int pi = 0; pi < portalCount; ++pi)
+		{
+			portal_t* P = sorted_portals[pi];
+
+			if (memcmp(P->portalvis, backupVis[pi], portalbytes) != 0)
+			{
+				totalDiff++;
+				if (g_bDebugMode)
+					Warning("[TryGPU] Mismatch in portal %d between GPU and CPU.\n", pi);
+			}
+
+			free(backupVis[pi]);
+		}
+		free(backupVis);
+
+		if (totalDiff > 0)
+		{
+			Warning("[TryGPU] %d portals differ - CPU results will be used.\n", totalDiff);
+		}
+		else
+		{
+			Msg("[TryGPU] GPU vis matches CPU vis for ALL portals.\n");
+		}
+	}
 }
+
+
 
 void CalcVisTrace(void) {
 	RunThreadsOnIndividual(g_numportals * 2, true, BasePortalVis);
