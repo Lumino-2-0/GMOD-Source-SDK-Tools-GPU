@@ -44,6 +44,7 @@ double g_VisRadius = 4096.0 * 4096.0;
 bool g_bLowPriority = false;
 bool g_bDebugMode = false;
 bool g_bTryGPU = false;
+bool g_bNoGPU = false;
 
 //=============================================================================
 
@@ -182,121 +183,89 @@ ClusterMerge
 Merges the portal visibility for a leaf
 ===============
 */
-void ClusterMerge (int clusternum)
+void ClusterMerge(int clusternum)
 {
-	leaf_t		*leaf;
-//	byte		portalvector[MAX_PORTALS/8];
-	byte		portalvector[MAX_PORTALS/4];      // 4 because portal bytes is * 2
-	byte		uncompressed[MAX_MAP_LEAFS/8];
+	leaf_t* leaf;
+	//	byte		portalvector[MAX_PORTALS/8];
+	byte		portalvector[MAX_PORTALS / 4];      // 4 because portal bytes is * 2
+	byte		uncompressed[MAX_MAP_LEAFS / 8];
 	int			i, j;
 	int			numvis;
-	portal_t	*p;
+	portal_t* p;
 	int			pnum;
 
 	// OR together all the portalvis bits
 
-	memset (portalvector, 0, portalbytes);
+	memset(portalvector, 0, portalbytes);
 	leaf = &leafs[clusternum];
-	for (i=0 ; i < leaf->portals.Count(); i++)
+	for (i = 0; i < leaf->portals.Count(); i++)
 	{
 		p = leaf->portals[i];
 		if (p->status != stat_done)
-			Error ("portal not done %d %p %p\n", i, p, portals);
-		for (j=0 ; j<portallongs ; j++)
-			((long *)portalvector)[j] |= ((long *)p->portalvis)[j];
+			Error("portal not done %d %p %p\n", i, p, portals);
+		for (j = 0; j < portallongs; j++)
+			((long*)portalvector)[j] |= ((long*)p->portalvis)[j];
 		pnum = p - portals;
-		SetBit( portalvector, pnum );
+		SetBit(portalvector, pnum);
 	}
 
 	// convert portal bits to leaf bits
-	numvis = LeafVectorFromPortalVector (portalvector, uncompressed);
+	numvis = LeafVectorFromPortalVector(portalvector, uncompressed);
 
 #if 0
 	// func_viscluster makes this happen all the time because it allows a non-convex set of portals
 	// My analysis says this is ok, but it does make this check for errors in vis kind of useless
-	if ( CheckBit( uncompressed, clusternum ) )
+	if (CheckBit(uncompressed, clusternum))
 		Warning("WARNING: Cluster portals saw into cluster\n");
 #endif
-		
-	SetBit( uncompressed, clusternum );
+
+	SetBit(uncompressed, clusternum);
 	numvis++;		// count the leaf itself
 
 	// save uncompressed for PHS calculation
-	memcpy (uncompressedvis + clusternum*leafbytes, uncompressed, leafbytes);
+	memcpy(uncompressedvis + clusternum * leafbytes, uncompressed, leafbytes);
 
-	qprintf ("cluster %4i : %4i visible\n", clusternum, numvis);
+	qprintf("cluster %4i : %4i visible\n", clusternum, numvis);
 	totalvis += numvis;
 }
 
-static int CompressAndCrosscheckClusterVis( int clusternum )
+static int CompressAndCrosscheckClusterVis(int clusternum)
 {
 	int		optimized = 0;
-	byte	compressed[MAX_MAP_LEAFS/8];
-//
-// compress the bit string
-//
-	byte *uncompressed = uncompressedvis + clusternum*leafbytes;
-	for ( int i = 0; i < portalclusters; i++ )
+	byte	compressed[MAX_MAP_LEAFS / 8];
+	//
+	// compress the bit string
+	//
+	byte* uncompressed = uncompressedvis + clusternum * leafbytes;
+	for (int i = 0; i < portalclusters; i++)
 	{
-		if ( i == clusternum )
+		if (i == clusternum)
 			continue;
 
-		if ( CheckBit( uncompressed, i ) )
+		if (CheckBit(uncompressed, i))
 		{
-			byte *other = uncompressedvis + i*leafbytes;
-			if ( !CheckBit( other, clusternum ) )
+			byte* other = uncompressedvis + i * leafbytes;
+			if (!CheckBit(other, clusternum))
 			{
-				ClearBit( uncompressed, i );
+				ClearBit(uncompressed, i);
 				optimized++;
 			}
 		}
 	}
-	int numbytes = CompressVis( uncompressed, compressed );
+	int numbytes = CompressVis(uncompressed, compressed);
 
-	byte *dest = vismap_p;
+	byte* dest = vismap_p;
 	vismap_p += numbytes;
-	
+
 	if (vismap_p > vismap_end)
-		Error ("Vismap expansion overflow");
+		Error("Vismap expansion overflow");
 
-	dvis->bitofs[clusternum][DVIS_PVS] = dest-vismap;
+	dvis->bitofs[clusternum][DVIS_PVS] = dest - vismap;
 
-	memcpy( dest, compressed, numbytes );
+	memcpy(dest, compressed, numbytes);
 
 	// check vis data
-	byte verify[MAX_MAP_LEAFS / 8];
-	// DecompressVis(srcCompressed, destUncompressed)
-	DecompressVis(vismap + dvis->bitofs[clusternum][DVIS_PVS], verify);
-
-	// Comparaison binaire
-	if (memcmp(verify, uncompressed, leafbytes) != 0) {
-		Warning("VVIS VERIFY MISMATCH: cluster %d, leafbytes=%d, numbytes=%d\n", clusternum, leafbytes, numbytes);
-
-		// Écrire des fichiers de dump pour analyse
-		char fname[256];
-		snprintf(fname, sizeof(fname), "vvis_uncompressed_cluster_%d.bin", clusternum);
-		FILE* f = fopen(fname, "wb");
-		if (f) { fwrite(uncompressed, 1, leafbytes, f); fclose(f); }
-
-		snprintf(fname, sizeof(fname), "vvis_verify_cluster_%d.bin", clusternum);
-		f = fopen(fname, "wb");
-		if (f) { fwrite(verify, 1, leafbytes, f); fclose(f); }
-
-		snprintf(fname, sizeof(fname), "vvis_compressed_cluster_%d.bin", clusternum);
-		f = fopen(fname, "wb");
-		if (f) { fwrite(compressed, 1, numbytes, f); fclose(f); }
-
-		Warning("Dumps écrits : %s, %s, %s\n",
-			(vsprintf(fname, "%s", fname), "vvis_uncompressed_cluster_<n>.bin"),
-			"vvis_verify_cluster_<n>.bin",
-			"vvis_compressed_cluster_<n>.bin");
-
-		// Optionnel : arrêter tôt pour inspection (décommente si tu veux stopper)
-		// Error("VVIS verification failed for cluster %d - see dumps\n", clusternum);
-	}
-	else {
-		qprintf("VVIS VERIFY OK for cluster %d", clusternum);
-	}
+	DecompressVis(vismap + dvis->bitofs[clusternum][DVIS_PVS], compressed);
 
 	return optimized;
 }
@@ -311,7 +280,7 @@ CalcPortalVis
 void CalcPortalVis()
 {
 	// ============================================================
-	// 0 - FASTVIS (skips GPU & CPU work)
+	// 0 - FASTVIS
 	// ============================================================
 	if (fastvis)
 	{
@@ -324,17 +293,34 @@ void CalcPortalVis()
 		return;
 	}
 
+<<<<<<< Updated upstream
+=======
+	// ============================================================
+	// 0.5 - FORCE CPU
+	// ============================================================
+	if (CommandLine()->FindParm("-nogpu"))
+	{
+		Msg("[GPU-VIS] NOGPU forced, running CPU only.\n");
+		g_bNoGPU = true;
+		int portalCount = g_numportals * 2;
+
+		RunThreadsOnIndividual(portalCount, true, PortalFlow_CPU);
+		return;
+	}
+
+>>>>>>> Stashed changes
 	// ============================================================
 	// 1 - INIT GPU
 	// ============================================================
 	if (!InitOpenCL_PortalFlow())
 	{
+		Warning("[GPU-VIS] OPENCL init failed, fallback CPU.\n");
 		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
 		return;
 	}
 
 	// ============================================================
-	// 2 - BUILD LEAF->PORTAL TABLE BEFORE ALLOC
+	// 2 - LEAF -> PORTAL TABLE
 	// ============================================================
 	BuildLeafPortalTable();
 
@@ -349,72 +335,35 @@ void CalcPortalVis()
 	}
 
 	// ============================================================
-	// 4 - RUN THE FULL GPU PORTAL FLOW
+	// 4 - HYBRID GPU FILTER (MIGHT-SEE ONLY)
 	// ============================================================
-	Msg("[GPU-VIS] Starting FULL GPU PortalFlow...\n");
-	PortalFlow_FullGPU();
-	Msg("[GPU-VIS] FULL GPU PortalFlow done.\n");
+	ApplyHybridMightSeeToCPU();
+	ApplyLeafHybridToPortals();
+
+	// ============================================
+	// CRITICAL: RESET CPU PORTAL STATE
+	// ============================================
+	int portalCount = g_numportals * 2;
+	for (int i = 0; i < portalCount; i++)
+	{
+		portal_t* P = sorted_portals[i];
+		P->status = stat_none;
+	}
+	// ============================================
+
+	BuildPortalOrderByMightSee();
+	RunThreadsOnIndividual(portalCount, true, PortalFlow_CPU_Ordered);
 
 	// ============================================================
-	// 5 - TRYGPU MODE : CPU COMPARISON
+	// 7 - TRYGPU MODE (DEBUG)
 	// ============================================================
 	if (g_bTryGPU)
 	{
-		Msg("[GPU-VIS] Starting CPU PortalFlow for comparison (TryGPU mode)...\n");
-
-		int portalCount = g_numportals * 2;
-
-		// ----------- BACKUP GPU VIS FOR EACH PORTAL -----------
-		byte** backupVis = (byte**)malloc(portalCount * sizeof(byte*));
-
-		for (int pi = 0; pi < portalCount; ++pi)
-		{
-			portal_t* P = sorted_portals[pi];
-
-			backupVis[pi] = (byte*)malloc(portalbytes);
-			memcpy(backupVis[pi], P->portalvis, portalbytes);
-
-			// restore CPU initial conditions (portalflood)
-			memcpy(P->portalvis, P->portalflood, portalbytes);
-			P->status = stat_none;
-
-			// Auto-visible flag (CPU always sets this)
-			int byte = pi >> 5;
-			int bit = 1 << (pi & 31);
-			P->portalvis[byte] |= bit;
-		}
-
-		// ----------- RUN CPU PORTALFLOW -----------
-		RunThreadsOnIndividual(portalCount, true, PortalFlow_CPU);
-
-		// ----------- COMPARE GPU vs CPU RESULTS -----------
-		int totalDiff = 0;
-
-		for (int pi = 0; pi < portalCount; ++pi)
-		{
-			portal_t* P = sorted_portals[pi];
-
-			if (memcmp(P->portalvis, backupVis[pi], portalbytes) != 0)
-			{
-				totalDiff++;
-				if (g_bDebugMode)
-					Warning("[TryGPU] Mismatch in portal %d between GPU and CPU.\n", pi);
-			}
-
-			free(backupVis[pi]);
-		}
-		free(backupVis);
-
-		if (totalDiff > 0)
-		{
-			Warning("[TryGPU] %d portals differ - CPU results will be used.\n", totalDiff);
-		}
-		else
-		{
-			Msg("[TryGPU] GPU vis matches CPU vis for ALL portals.\n");
-		}
+		Msg("[GPU-VIS] TryGPU mode enabled — CPU comparison...\n");
+		// ton code TryGPU ici
 	}
 }
+
 
 
 
@@ -449,19 +398,16 @@ void CalcVis (void)
 		ClusterMerge( i );
 	}
 
-	int count = 0;
-	// Now crosscheck each leaf's vis and compress
-	for ( i = 0; i < portalclusters; i++ )
+	int visible = 0;
+	for (i = 0; i < portalclusters; i++)
 	{
-		count += CompressAndCrosscheckClusterVis( i );
+		visible += CompressAndCrosscheckClusterVis(i);
 	}
 
-		
-	Msg ("Optimized: %d visible clusters (%.2f%%)\n", count, count*100.0/totalvis);
+	Msg("Optimized: %d visible clusters (%.2f%%)\n",visible, visible * 100.0 / totalvis);
 	Msg ("Total clusters visible: %i\n", totalvis);
 	Msg ("Average clusters visible: %i\n", totalvis / portalclusters);
 }
-
 
 void SetPortalSphere (portal_t *p)
 {
@@ -1102,10 +1048,12 @@ int ParseCommandLine( int argc, char **argv )
 void PrintCommandLine( int argc, char **argv )
 {
 	Warning( "Command line: " );
+
 	for ( int z=0; z < argc; z++ )
 	{
 		Warning( "\"%s\" ", argv[z] );
 	}
+
 	Warning( "\n\n" );
 }
 
@@ -1123,7 +1071,8 @@ void PrintUsage( int argc, char **argv )
 		"  -v (or -verbose): Turn on verbose output (also shows more command\n"
 		"  -fast           : Only do first quick pass on vis calculations.\n"
 
-		"  -mpi            : Use VMPI to distribute computations.\n"
+		"  -mpi            : Use VMPI to distribute computations [GPU_MOD : UNACTIVE IN THIS VERSION OF VVIS].\n"
+		"  -mpi_pw <pw>    : Use a password to choose a specific set of VMPI workers [GPU_MOD : UNACTIVE IN THIS VERSION OF VVIS].\n"
 
 		"  -low            : Run as an idle-priority process.\n"
 		"                    env_fog_controller specifies one.\n"
@@ -1134,9 +1083,6 @@ void PrintUsage( int argc, char **argv )
 		"Other options:\n"
 		"  -novconfig      : Don't bring up graphical UI on vproject errors.\n"
 		"  -radius_override: Force a vis radius, regardless of whether an\n"
-
-		"  -mpi_pw <pw>    : Use a password to choose a specific set of VMPI workers.\n"
-
 		"  -threads        : Control the number of threads vbsp uses (defaults to the #\n"
 		"                    or processors on your machine).\n"
 		"  -nosort         : Don't sort portals (sorting is an optimization).\n"
@@ -1153,6 +1099,7 @@ void PrintUsage( int argc, char **argv )
 		"  -PresetGPU      : Choisit l'agressivite de l'optimisation GPU.\n"
 		"       0 = Soft (quasi-identique VVIS original)\n"
 		"       1 = Normal\n"
+<<<<<<< Updated upstream
 		"       2 = Aggressive (defaut)\n"
 		"       3 = Ultra (pour tres grandes maps ouvertes)\n"
 		"  -NoCheckLib    : Desactive la verification des bibliotheques fournis avec la version moddé (tier0; vstdlib;  filesystem_stdio) au demarrage (utile pour les tests de developpement).\n"
@@ -1161,30 +1108,12 @@ void PrintUsage( int argc, char **argv )
 		);
 #else
 		"  -mpi_ListParams : Show a list of VMPI parameters.\n"
+=======
+		"       2 = Aggressive (Area occlusion)\n"
+		"       3 = Ultra (pour tres grandes maps/complexes)\n"
+>>>>>>> Stashed changes
 		"\n"
 		);
-
-	// Show VMPI parameters?
-	for ( int i=1; i < argc; i++ )
-	{
-		if ( V_stricmp( argv[i], "-mpi_ListParams" ) == 0 )
-		{
-			Warning( "VMPI-specific options:\n\n" );
-
-			bool bIsSDKMode = VMPI_IsSDKMode();
-			for ( int i=k_eVMPICmdLineParam_FirstParam+1; i < k_eVMPICmdLineParam_LastParam; i++ )
-			{
-				if ( (VMPI_GetParamFlags( (EVMPICmdLineParam)i ) & VMPI_PARAM_SDK_HIDDEN) && bIsSDKMode )
-					continue;
-					
-				Warning( "[%s]\n", VMPI_GetParamString( (EVMPICmdLineParam)i ) );
-				Warning( VMPI_GetParamHelpString( (EVMPICmdLineParam)i ) );
-				Warning( "\n\n" );
-			}
-			break;
-		}
-	}
-#endif
 }
 
 
@@ -1362,7 +1291,7 @@ int RunVVis( int argc, char **argv )
 
 /*
 ===========
-main
+	main
 ===========
 */
 

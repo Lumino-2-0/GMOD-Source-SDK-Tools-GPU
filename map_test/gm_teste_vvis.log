@@ -1,0 +1,61 @@
+
+
+
+24 threads
+reading c:\users\lumin\desktop\github\source old main\map_test\gm_teste_vvis.bsp
+reading c:\users\lumin\desktop\github\source old main\map_test\gm_teste_vvis.prt
+ 449 portalclusters
+1755 numportals
+0...1...2...3...4...5...6...7...8...9...10[GPU-VIS] Preset 2 loaded
+
+
+
+24 threads
+reading c:\users\lumin\desktop\github\source old main\map_test\gm_teste_vvis.bsp
+reading c:\users\lumin\desktop\github\source old main\map_test\gm_teste_vvis.prt
+ 449 portalclusters
+1755 numportals
+0...1...2...3...4...5...6...7...8...9...100...1...2...3...4...5...6...7...8...9...10Optimized: 2528 visible clusters (38.69%)
+Total clusters visible: 6534
+Average clusters visible: 14
+Building PAS...
+Average clusters audible: 48
+visdatasize:20678  compressed from 51186
+writing c:\users\lumin\desktop\github\source old main\map_test\gm_teste_vvis.bsp
+MSG_FILEWRITE - Filesystem was asked to write to 'c:\users\lumin\desktop\github\source old main\map_test\gm_teste_vvis.bsp', but we don't own that location. Allowing.
+0 seconds elapsed
+
+
+
+24 threads
+reading c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.bsp
+reading c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.prt
+ 449 portalclusters
+1755 numportals
+BasePortalVis:       0...1...2...3...4...5...6...7...8...9...10 (0)
+PortalFlow:          0...1...2...3...4...5...6...7...8...9...10 (2)
+Optimized: 705 visible clusters (0.81%)
+Total clusters visible: 87185
+Average clusters visible: 194
+Building PAS...
+Average clusters audible: 447
+visdatasize:51448  compressed from 57472
+writing c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.bsp
+2 seconds elapsed
+
+
+
+24 threads
+reading c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.bsp
+reading c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.prt
+ 449 portalclusters
+1755 numportals
+0...1...2...3...4...5...6...7...8...9...100...1...2...3...4...5...6...7...8...9...10Optimized: 704 visible clusters (0.81%)
+Total clusters visible: 87184
+Average clusters visible: 194
+Building PAS...
+Average clusters audible: 447
+visdatasize:51448  compressed from 57472
+writing c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.bsp
+MSG_FILEWRITE - Filesystem was asked to write to 'c:\users\lumin\desktop\github\source-sdk-2013-gmod-tools-mod\map_test\gm_teste_vvis.bsp', but we don't own that location. Allowing.
+13 seconds elapsed

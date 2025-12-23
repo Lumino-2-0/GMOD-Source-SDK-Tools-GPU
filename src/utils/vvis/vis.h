@@ -10,6 +10,7 @@ extern double g_VisRadius;
 
 extern bool g_bTryGPU;    // active l'échantillonnage CPU↔GPU (-TryGPU)
 extern bool g_bDebugMode; // active le tracing/logging (-debug)
+extern bool g_bNoGPU;
 
 extern int g_gpuPreset;
 
@@ -43,6 +44,12 @@ struct portal_t {
     byte* portalflood;  // [portals], intermediaire
     byte* portalvis;    // [portals], final
     int nummightsee;    // bit-count de portalflood pour tri
+<<<<<<< Updated upstream
+=======
+	byte* portalvis_cpu; // [portals], final CPU
+	byte* portalvisGPU; // [portals], final GPU
+    byte* portalHybridMask;
+>>>>>>> Stashed changes
 };
 
 struct leaf_t {
@@ -59,6 +66,7 @@ struct pstack_t {
     winding_t windings[3];
     int freewindings[3];
     plane_t portalplane;
+    bool skipSeparators;
 };
 
 struct threaddata_t {
@@ -89,9 +97,7 @@ void LeafFlow(int leafnum);
 
 void BasePortalVis(int iThread, int portalnum);
 void BetterPortalVis(int portalnum);
-void PortalFlow(int iThread, int portalnum);
 void PortalFlow_CPU(int iThread, int portalnum);
-bool PortalFlow_GPU(int portalIdx, portal_t* p);
 void WritePortalTrace(const char* source);
 
 extern portal_t* sorted_portals[MAX_MAP_PORTALS * 2];

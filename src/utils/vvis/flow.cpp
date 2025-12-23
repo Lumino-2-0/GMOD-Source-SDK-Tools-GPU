@@ -23,8 +23,8 @@
 #include <iomanip>
 #include <icommandline.h>
 #include "threads.h"
-
-
+#include <unordered_map>
+#include <cstdint>
 
 // =============================================================
 // UNIFIED EPSILON CONSTANTS (CPU <-> GPU CONSISTENCY)
@@ -34,11 +34,16 @@
 #define VIS_EPSILON_CLIP        1e-5f
 #define VIS_EPSILON_WINDING     1e-5f
 #define VIS_EPSILON_COLINEAR    1e-6f
+<<<<<<< Updated upstream
 
 // Remplace l'ancien ON_VIS_EPSILON du CPU
 #undef ON_VIS_EPSILON
 #define ON_VIS_EPSILON VIS_EPSILON_CLIP
+=======
+>>>>>>> Stashed changes
 
+
+static std::unordered_map<uint64_t, bool> g_gpuSeparatorCache;
 
 // Nombre total de points dynamiques
 static int g_totalWindingPoints = 0;
@@ -46,6 +51,10 @@ static int g_totalWindingPoints = 0;
 // Offsets CPU -> GPU (CPU side)
 static std::vector<int> g_windingOffsetsCPU;
 static std::vector<float3> g_windingPointsCPU;
+
+
+static std::vector<int> g_portalOrderCPU;
+
 
 // Buffers GPU
 static cl_mem d_windingPoints = nullptr;   // float3[]
@@ -66,12 +75,14 @@ bool UploadDynamicWindingsToGPU(cl_context ctx, cl_command_queue q, cl_int* errO
 // Patch GPU protos
 // =======================================================
 bool AllocatePortalFlowBuffers();
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
 void BuildLeafPortalTable();
 
 // Utilisé pour reconstruire les adjacency tables
-void BuildFlatLeafPortalArrays(std::vector<int>& outCount,
-	std::vector<int>& outList);
+void BuildFlatLeafPortalArrays(std::vector<int>& outCount, std::vector<int>& outList);
 
 static std::mutex g_trace_mutex;
 static std::ofstream g_trace_file;
@@ -79,13 +90,15 @@ static std::atomic<bool> g_trace_inited{ false };
 
 // ========= GPU PRUNE TUNING =========
 
-int g_gpuPreset = 2;
+int g_gpuPreset = 3;
 
-#include <CL/cl.h>
+
 
 
 GPUPortalFlowCLContext g_gpuPF = {};
 GPUFlowFixed g_gpuFF = {};
+GPUHybridVisContext g_gpuHybridVis = {};
+GPULeafHybridVisContext g_gpuLeafHybridVis = {};
 
 // =============================================================================
 // GLOBAL WINDING POOL (8 million float3 = ~96 MB GPU)
@@ -96,6 +109,64 @@ static std::vector<float3> g_initWindingCPU;
 
 static std::vector<std::vector<int>> g_leafPortals;
 static int g_maxPerLeaf = 256;
+
+// ============================================================================
+// PresetGPU 3 — World solid triangles (CPU)
+// ============================================================================
+static std::vector<WorldTriCPU> g_worldTrisCPU;
+
+
+inline uint64_t MakeLeafKey(int a, int b)
+{
+	if (a > b) std::swap(a, b);
+	return ((uint64_t)a << 32) | (uint64_t)b;
+}
+
+static cl_mem UploadTempWinding(winding_t* w)
+{
+	if (!w || w->numpoints <= 0)
+		return nullptr;
+
+	std::vector<float3> pts;
+	pts.resize(w->numpoints);
+
+	for (int i = 0; i < w->numpoints; i++)
+	{
+		pts[i].x = w->points[i].x;
+		pts[i].y = w->points[i].y;
+		pts[i].z = w->points[i].z;
+		pts[i].w = 0.0f;
+	}
+
+	cl_int err = CL_SUCCESS;
+	cl_mem buf = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(float3) * pts.size(),
+		pts.data(),
+		&err
+	);
+
+	if (err != CL_SUCCESS)
+		return nullptr;
+
+	return buf;
+}
+
+// ============================================================================
+// PresetGPU 3 — CPU BVH construction (temporary)
+// ============================================================================
+struct BVHBuildNode
+{
+	Vector mins;
+	Vector maxs;
+
+	int left = -1;
+	int right = -1;
+
+	int firstTri = 0;
+	int triCount = 0;
+};
 
 bool InitOpenCL_PortalFlow()
 {
@@ -223,6 +294,7 @@ bool InitOpenCL_PortalFlow()
 	g_gpuPF.k_resetPool = clCreateKernel(
 		g_gpuPF.program, "resetWindingPool", &kerr);
 
+<<<<<<< Updated upstream
 	g_gpuPF.k_gpuClipWinding = clCreateKernel(
 		g_gpuPF.program, "gpuChopWinding", &kerr);
 
@@ -234,6 +306,44 @@ bool InitOpenCL_PortalFlow()
 
 	g_gpuPF.k_expand = clCreateKernel(
 		g_gpuPF.program, "portalFlowExpand", &kerr);
+=======
+	
+
+	g_gpuPF.k_ultraWorldOcc = clCreateKernel(g_gpuPF.program, "ultra_worldOcclusion", &kerr);
+	if (kerr != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS] Failed to create ultra_worldOcclusion kernel\n");
+		return false;
+	}
+
+	g_gpuPF.k_rayTriangleBVH = clCreateKernel(g_gpuPF.program, "rayTriangleBVH", &kerr);
+	if (kerr != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS] Failed to create rayTriangleBVH kernel\n");
+		return false;
+	}
+
+	g_gpuPF.k_hybridFilter = clCreateKernel(g_gpuPF.program, "Hybrid_MightSee_Filter", &kerr);
+	if (kerr != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS] Failed to create Hybrid_MightSee_Filter kernel\n");
+		return false;
+	}
+
+	g_gpuPF.k_leafHybridFilter = clCreateKernel(g_gpuPF.program, "Leaf_MightSee_Filter", &kerr);
+	if (kerr != CL_SUCCESS)
+	{
+		Warning("[LEAF-HYBRID] Failed to create Leaf_MightSee_Filter kernel\n");
+		return false;
+	}
+
+	g_gpuPF.k_separatorReject = clCreateKernel(g_gpuPF.program, "SeparatorReject_MultiRay", &kerr);
+	if (kerr != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS] Failed to create SeparatorReject_MultiRay kernel\n");
+		return false;
+	}
+>>>>>>> Stashed changes
 
 	g_gpuPF.initialized = true;
 
@@ -242,6 +352,127 @@ bool InitOpenCL_PortalFlow()
 }
 
 
+<<<<<<< Updated upstream
+=======
+// ============================================================================
+// HYBRID VIS — INIT
+// ============================================================================
+
+bool InitGPUHybridVis()
+{
+	if (!InitOpenCL_PortalFlow())
+		return false;
+
+	if (!g_gpuPF.d_worldTris || !g_gpuPF.d_worldBVH)
+	{
+		Warning("[HYBRID-VIS] World data missing, hybrid disabled\n");
+		g_gpuHybridVis.enabled = false;
+		return false;
+	}
+
+	g_gpuHybridVis.enabled = true;
+
+	g_gpuHybridVis.filterJob.portalCount = g_numportals * 2;
+	g_gpuHybridVis.filterJob.portalLongs = portallongs;
+
+	int portalCount = g_gpuHybridVis.filterJob.portalCount;
+	int longs = g_gpuHybridVis.filterJob.portalLongs;
+
+	size_t maskBytes = portalCount * longs * sizeof(visword_t);
+
+	// Allocate GPU might-see result
+	g_gpuHybridVis.filterJob.result.portalCount = portalCount;
+	g_gpuHybridVis.filterJob.result.portalLongs = longs;
+
+	cl_int err = 0;
+	g_gpuHybridVis.filterJob.result.d_mightSeeMask =
+		clCreateBuffer(
+			g_gpuPF.context,
+			CL_MEM_READ_WRITE,
+			maskBytes,
+			nullptr,
+			&err
+		);
+
+	if (err != CL_SUCCESS)
+	{
+		Warning("[HYBRID-VIS] Failed to allocate GPU mightSee mask\n");
+		return false;
+	}
+
+	// Init mask to ZERO
+	int zero = 0;
+	clEnqueueFillBuffer(
+		g_gpuPF.queue,
+		g_gpuHybridVis.filterJob.result.d_mightSeeMask,
+		&zero,
+		sizeof(int),
+		0,
+		maskBytes,
+		0, nullptr, nullptr
+	);
+
+	clFinish(g_gpuPF.queue);
+
+	// Allocate CPU mirror
+	g_gpuHybridVis.cpuMightSeeMask.resize(portalCount * longs);
+
+	Msg("[HYBRID-VIS] GPU Hybrid VIS initialized (%d portals)\n", portalCount);
+	return true;
+}
+
+bool InitGPULeafHybridVis()
+{
+	if (!InitOpenCL_PortalFlow())
+		return false;
+
+	g_gpuLeafHybridVis.enabled = true;
+
+	g_gpuLeafHybridVis.leafCount = portalclusters;
+	g_gpuLeafHybridVis.leafLongs = (portalclusters + 31) >> 5;
+
+	int leafCount = g_gpuLeafHybridVis.leafCount;
+	int longs = g_gpuLeafHybridVis.leafLongs;
+
+	size_t bytes = leafCount * longs * sizeof(visword_t);
+
+	cl_int err = 0;
+	g_gpuLeafHybridVis.result.d_leafMightSee =
+		clCreateBuffer(
+			g_gpuPF.context,
+			CL_MEM_READ_WRITE,
+			bytes,
+			nullptr,
+			&err
+		);
+
+	if (err != CL_SUCCESS)
+	{
+		Warning("[LEAF-HYBRID] Failed to allocate leafMightSee buffer\n");
+		return false;
+	}
+
+	int zero = 0;
+	clEnqueueFillBuffer(
+		g_gpuPF.queue,
+		g_gpuLeafHybridVis.result.d_leafMightSee,
+		&zero,
+		sizeof(int),
+		0,
+		bytes,
+		0, nullptr, nullptr
+	);
+
+	clFinish(g_gpuPF.queue);
+
+	g_gpuLeafHybridVis.result.cpuLeafMightSee.resize(leafCount * longs);
+
+	Msg("[LEAF-HYBRID] Initialized GPU leaf hybrid vis (%d leaves)\n", leafCount);
+	return true;
+}
+
+
+>>>>>>> Stashed changes
 void ShutdownOpenCL_PortalFlow()
 {
 	if (!g_gpuPF.initialized)
@@ -265,6 +496,14 @@ void ShutdownOpenCL_PortalFlow()
 	REL(d_windingPoints);
 	REL(d_windingOffsets);
 	REL(d_windingCounts);
+<<<<<<< Updated upstream
+=======
+	REL(g_gpuPF.d_worldAABBs);
+	REL(g_gpuPF.d_worldBVH);
+	REL(g_gpuPF.d_portalArea);
+	REL(g_gpuPF.d_areaportals);
+	REL(g_gpuPF.d_worldTris);
+>>>>>>> Stashed changes
 
 #undef REL
 
@@ -723,6 +962,9 @@ void WritePortalTrace(const char* source)
 	Warning("Wrote %s!!!\n", filename);
 }
 
+static std::mutex g_gpuSeparatorCacheMutex;
+
+
 /*
 ==================
 RecursiveLeafFlow
@@ -841,7 +1083,6 @@ void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstac
 				continue;
 		}
 
-
 		if (!prevstack->pass)
 		{	// the second leaf can only be blocked if coplanar
 
@@ -851,6 +1092,28 @@ void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstac
 			RecursiveLeafFlow_CPU(p->leaf, thread, &stack);
 			continue;
 		}
+
+		// ============================================
+		// GPU EARLY REJECT — exact & safe
+		// ============================================
+		if (
+			g_gpuPF.initialized &&
+			g_gpuPreset >= 3 &&
+			prevstack == &thread->pstack_head
+			)
+		{
+			if (!GPU_CanPassSeparators(
+				stack.source,
+				prevstack->pass,
+				stack.pass,
+				p->leaf,
+				int(prevstack->leaf - leafs)
+			))
+			{
+				continue;
+			}
+		}
+
 
 		stack.pass = ClipToSeperators(stack.source, prevstack->pass, stack.pass, false, &stack);
 		if (!stack.pass)
@@ -868,16 +1131,284 @@ void RecursiveLeafFlow_CPU(int leafnum, threaddata_t* thread, pstack_t* prevstac
 	}
 }
 
+bool GPU_CanPassSeparators(
+	winding_t* source,
+	winding_t* pass,
+	winding_t* target,
+	int leafA,
+	int leafB
+)
+{
+	// ================= FAIL SAFE =================
+	if (!g_gpuPF.initialized)
+		return true;
+
+	if (!g_gpuPF.d_worldTris || !g_gpuPF.d_worldBVH)
+		return true;
+
+	// Trop petit → CPU déjà exact
+	if (source->numpoints < 3 || target->numpoints < 3)
+		return true;
+
+	// Protection runaway kernel
+	if (source->numpoints * target->numpoints > 256)
+		return true;
+
+	if (!g_gpuPF.k_separatorReject)
+		return true;
+
+
+	if (!source || !target || source->numpoints <= 0 || target->numpoints <= 0)
+		return true;
+	// ============================================
+
+
+	// ---------------- CACHE ----------------
+	const uint64_t key =
+		((uint64_t)leafA << 48) ^
+		((uint64_t)leafB << 32) ^
+		((uint64_t)source->numpoints << 16) ^
+		(uint64_t)target->numpoints;
+	{
+		std::lock_guard<std::mutex> lock(g_gpuSeparatorCacheMutex);
+		auto it = g_gpuSeparatorCache.find(key);
+		if (it != g_gpuSeparatorCache.end())
+			return it->second;
+	}
+	// ---------------------------------------
+
+	cl_mem d_src = UploadTempWinding(source);
+	cl_mem d_tgt = UploadTempWinding(target);
+
+	if (!d_src || !d_tgt)
+	{
+		if (d_src) clReleaseMemObject(d_src);
+		if (d_tgt) clReleaseMemObject(d_tgt);
+		return true;
+	}
+
+	int srcCount = source->numpoints;
+	int tgtCount = target->numpoints;
+
+	cl_int err = CL_SUCCESS;
+	int zero = 0;
+	cl_mem d_result = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+		sizeof(int),
+		&zero,
+		&err
+	);
+
+	if (err != CL_SUCCESS || !d_result)
+	{
+		clReleaseMemObject(d_src);
+		clReleaseMemObject(d_tgt);
+		return true;
+	}
+
+	size_t global = (size_t)srcCount * (size_t)tgtCount;
+
+	err = clSetKernelArg(g_gpuPF.k_separatorReject, 0, sizeof(cl_mem), &d_src);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 1, sizeof(int), &srcCount);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 2, sizeof(cl_mem), &d_tgt);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 3, sizeof(int), &tgtCount);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 4, sizeof(cl_mem), &g_gpuPF.d_worldTris);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 5, sizeof(cl_mem), &g_gpuPF.d_worldBVH);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 6, sizeof(int), &g_gpuPF.worldTriCount);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 7, sizeof(int), &g_gpuPF.worldBVHCount);
+	err |= clSetKernelArg(g_gpuPF.k_separatorReject, 8, sizeof(cl_mem), &d_result);
+
+	if (err == CL_SUCCESS)
+	{
+		err = clEnqueueNDRangeKernel(
+			g_gpuPF.queue,
+			g_gpuPF.k_separatorReject,
+			1, nullptr, &global, nullptr,
+			0, nullptr, nullptr
+		);
+		clFinish(g_gpuPF.queue);
+	}
+
+	int result = 1; // fallback = POSSIBLE
+	if (err == CL_SUCCESS)
+	{
+		clEnqueueReadBuffer(
+			g_gpuPF.queue,
+			d_result,
+			CL_TRUE,
+			0,
+			sizeof(int),
+			&result,
+			0, nullptr, nullptr
+		);
+	}
+
+	clReleaseMemObject(d_src);
+	clReleaseMemObject(d_tgt);
+	clReleaseMemObject(d_result);
+
+	bool canPass = (result != 0);
+
+	{
+		std::lock_guard<std::mutex> lock(g_gpuSeparatorCacheMutex);
+		g_gpuSeparatorCache[key] = canPass;
+	}
+
+	return canPass;
+}
+
 
 void BuildFlatLeafPortalArrays(std::vector<int>& outCount, std::vector<int>& outList);
 
 /*
 // --------------------
-// PortalFlow
+// PortalFlow + All fonctions for GPU
 // --------------------
 //
 */
 
+<<<<<<< Updated upstream
+=======
+// ============================================================================
+// PresetGPU 3 — Extract solid world triangles from BSP (CPU)
+// ============================================================================
+static void ExtractWorldSolidTriangles()
+{
+	g_worldTrisCPU.clear();
+
+	for (int i = 0; i < numfaces; i++)
+	{
+		const dface_t& face = dfaces[i];
+
+		// Skip faces with no edges
+		if (face.numedges < 3)
+			continue;
+
+		// Texture info
+		const texinfo_t& ti = texinfo[face.texinfo];
+
+		// Skip sky / tools / non-solid
+		if (ti.flags & (SURF_SKY | SURF_NODRAW))
+			continue;
+
+		// Get plane
+		const dplane_t& plane = dplanes[face.planenum];
+
+		// Skip non-solid planes (parano)
+		if (!(plane.type >= 0))
+			continue;
+
+		// Collect vertices of the face
+		std::vector<Vector> verts;
+		verts.reserve(face.numedges);
+
+		for (int e = 0; e < face.numedges; e++)
+		{
+			int surfEdge = dsurfedges[face.firstedge + e];
+			int edgeIdx = abs(surfEdge);
+			const dedge_t& edge = dedges[edgeIdx];
+
+			int vertIdx = (surfEdge >= 0) ? edge.v[0] : edge.v[1];
+			const Vector& v = *(Vector*)&dvertexes[vertIdx];
+
+			verts.push_back(v);
+		}
+
+		if (verts.size() < 3)
+			continue;
+
+		// Triangulation fan: (v0, v[i], v[i+1])
+		const Vector& v0 = verts[0];
+		for (size_t t = 1; t + 1 < verts.size(); t++)
+		{
+			WorldTriCPU tri;
+			tri.a = v0;
+			tri.b = verts[t];
+			tri.c = verts[t + 1];
+
+			g_worldTrisCPU.push_back(tri);
+		}
+	}
+
+	Msg("[GPU-VIS][PRESET3] Extracted %zu world solid triangles\n",
+		g_worldTrisCPU.size());
+}
+
+static void ComputeTriAABB(const WorldTriCPU& t, Vector& mins, Vector& maxs)
+{
+	mins = t.a;
+	maxs = t.a;
+
+	AddPointToBounds(t.b, mins, maxs);
+	AddPointToBounds(t.c, mins, maxs);
+}
+
+static float SurfaceArea(const Vector& mins, const Vector& maxs)
+{
+	Vector e = maxs - mins;
+	return 2.0f * (e.x * e.y + e.x * e.z + e.y * e.z);
+}
+
+static std::vector<BVHBuildNode> g_bvhBuildNodes;
+static std::vector<int> g_bvhTriIndices;
+
+static int BuildBVHNode(int start, int count)
+{
+	BVHBuildNode node;
+	Vector mins(1e30f, 1e30f, 1e30f);
+	Vector maxs(-1e30f, -1e30f, -1e30f);
+
+	for (int i = 0; i < count; i++)
+	{
+		Vector tmin, tmax;
+		ComputeTriAABB(g_worldTrisCPU[g_bvhTriIndices[start + i]], tmin, tmax);
+		AddPointToBounds(tmin, mins, maxs);
+		AddPointToBounds(tmax, mins, maxs);
+	}
+
+	node.mins = mins;
+	node.maxs = maxs;
+	node.firstTri = start;
+	node.triCount = count;
+
+	int nodeIndex = (int)g_bvhBuildNodes.size();
+	g_bvhBuildNodes.push_back(node);
+
+	// Leaf condition
+	if (count <= 4)
+		return nodeIndex;
+
+	// Choose split axis (largest extent)
+	Vector ext = maxs - mins;
+	int axis = (ext.x > ext.y && ext.x > ext.z) ? 0 :
+		(ext.y > ext.z) ? 1 : 2;
+
+	float splitPos = 0.5f * (mins[axis] + maxs[axis]);
+
+	int mid = start;
+	for (int i = start; i < start + count; i++)
+	{
+		const WorldTriCPU& t = g_worldTrisCPU[g_bvhTriIndices[i]];
+		float c = (t.a[axis] + t.b[axis] + t.c[axis]) / 3.0f;
+		if (c < splitPos)
+			std::swap(g_bvhTriIndices[i], g_bvhTriIndices[mid++]);
+	}
+
+	int leftCount = mid - start;
+	int rightCount = count - leftCount;
+
+	// Fallback if split failed
+	if (leftCount == 0 || rightCount == 0)
+		return nodeIndex;
+
+	node.left = BuildBVHNode(start, leftCount);
+	node.right = BuildBVHNode(mid, rightCount);
+
+	g_bvhBuildNodes[nodeIndex] = node;
+	return nodeIndex;
+}
+>>>>>>> Stashed changes
 
 bool AllocatePortalFlowBuffers()
 {
@@ -885,6 +1416,7 @@ bool AllocatePortalFlowBuffers()
 		return false;
 
 	cl_int err = 0;
+	int zero = 0;
 
 	// ----------------------------------------
 	// PARAMÈTRES PORTAILS
@@ -900,6 +1432,13 @@ bool AllocatePortalFlowBuffers()
 	const size_t radiusBytes = portalCount * sizeof(float);
 	const size_t planeBytes = portalCount * sizeof(float4);
 
+<<<<<<< Updated upstream
+=======
+
+	// ---------------------------------------------------------
+	// RELEASE PREVIOUS BUFFERS
+	// ---------------------------------------------------------
+>>>>>>> Stashed changes
 #define REL(x) if(x){ clReleaseMemObject(x); x=nullptr; }
 
 	REL(g_gpuPF.d_portalVis);
@@ -923,8 +1462,11 @@ bool AllocatePortalFlowBuffers()
 	REL(g_gpuPF.d_initSrcOffset);
 	REL(g_gpuPF.d_initSrcCount);
 
+	REL(g_gpuPF.d_ultraRejectMask);
+
 #undef REL
 
+<<<<<<< Updated upstream
 	// =====================================================
 	// PORTALVIS GPU = copie CPU portalflood[] + auto-vis
 	// =====================================================
@@ -945,6 +1487,59 @@ bool AllocatePortalFlowBuffers()
 			0, nullptr, nullptr
 		);
 	}
+=======
+	// =========================================================
+	// ULTRA REJECT MASK (PresetGPU 2)
+	// =========================================================
+
+
+	g_gpuPF.d_ultraRejectMask = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_WRITE,
+		maskBytes,
+		nullptr,
+		&err
+	);
+	if (err != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS][ULTRA] Failed to create ultraRejectMask\n");
+		return false;
+	}
+
+	clEnqueueFillBuffer(
+		g_gpuPF.queue,
+		g_gpuPF.d_ultraRejectMask,
+		&zero,
+		sizeof(int),
+		0,
+		maskBytes,
+		0, nullptr, nullptr
+	);
+
+	clFinish(g_gpuPF.queue);
+
+
+
+	// CREATE GPU portalVis[] : START EMPTY (GPU BUILDS VIS)
+	g_gpuPF.d_portalVis = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_WRITE,
+		maskBytes,
+		nullptr,
+		&err
+	);
+
+	std::vector<int> init(portalCount * longs, 0);
+	clEnqueueWriteBuffer(
+		g_gpuPF.queue,
+		g_gpuPF.d_portalVis,
+		CL_TRUE,
+		0,
+		init.size() * sizeof(int),
+		init.data(),
+		0, nullptr, nullptr
+	);
+>>>>>>> Stashed changes
 
 	// auto-visibilité
 	for (int p = 0; p < portalCount; p++)
@@ -970,11 +1565,31 @@ bool AllocatePortalFlowBuffers()
 		);
 	}
 
+<<<<<<< Updated upstream
 	// =====================================================
 	// ORIGINES / RADIUS / PLANES
 	// =====================================================
+=======
+
+
+	std::vector<float3> h_orig(portalCount);
+	std::vector<float>  h_rad(portalCount);
+	std::vector<float4> h_pl(portalCount);
+	std::vector<float3> h_normals(portalCount);
+	std::vector<int>	h_leaf(portalCount);
+	std::vector<int>	h_area(portalCount, 0);
+
+
+	// =========================================================
+	// CORE BUFFERS : origins / radius / planes
+	// =========================================================
+>>>>>>> Stashed changes
 	g_gpuPF.d_origins = clCreateBuffer(
 		g_gpuPF.context, CL_MEM_READ_ONLY, originBytes, nullptr, &err);
+	if (err) return false;
+
+	g_gpuPF.d_portalNormals = clCreateBuffer(
+		g_gpuPF.context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, portalCount * sizeof(float3),	h_normals.data(),&err); 
 	if (err) return false;
 
 	g_gpuPF.d_radius = clCreateBuffer(
@@ -985,10 +1600,20 @@ bool AllocatePortalFlowBuffers()
 		g_gpuPF.context, CL_MEM_READ_ONLY, planeBytes, nullptr, &err);
 	if (err) return false;
 
+<<<<<<< Updated upstream
 	std::vector<float3> h_orig(portalCount);
 	std::vector<float>  h_rad(portalCount);
 	std::vector<float4> h_pl(portalCount);
 	std::vector<int>    h_leaf(portalCount);
+=======
+	g_gpuPF.d_winding4 = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_ONLY,
+		portalCount * 4 * sizeof(float3),
+		nullptr,
+		&err
+	);
+>>>>>>> Stashed changes
 
 	for (int p = 0; p < portalCount; p++)
 	{
@@ -996,8 +1621,15 @@ bool AllocatePortalFlowBuffers()
 
 		h_orig[p] = { P->origin.x, P->origin.y, P->origin.z };
 		h_rad[p] = P->radius;
+<<<<<<< Updated upstream
 		h_pl[p] = { P->plane.normal.x, P->plane.normal.y,
 					  P->plane.normal.z, P->plane.dist };
+=======
+		h_pl[p] = { P->plane.normal.x, P->plane.normal.y, P->plane.normal.z, P->plane.dist };
+		h_normals[p] = {P->plane.normal.x, P->plane.normal.y, P->plane.normal.z, 0.f};
+
+
+>>>>>>> Stashed changes
 		h_leaf[p] = P->leaf;
 	}
 
@@ -1075,7 +1707,34 @@ bool AllocatePortalFlowBuffers()
 	);
 	if (err) return false;
 
+<<<<<<< Updated upstream
 	if (!h_pts.empty())
+=======
+	// ===== POOL COUNTER (MANQUANT) =====
+	g_gpuPF.d_windPoolCount = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_WRITE,
+		sizeof(int),
+		nullptr,
+		&err
+	);
+	if (err) return false;
+
+	// init pool counter
+	int poolStart = g_totalWindingPoints;
+	clEnqueueWriteBuffer(
+		g_gpuPF.queue,
+		g_gpuPF.d_windPoolCount,
+		CL_TRUE,
+		0,
+		sizeof(int),
+		&poolStart,
+		0, nullptr, nullptr
+	);
+
+
+	if (g_totalWindingPoints > 0)
+>>>>>>> Stashed changes
 	{
 		clEnqueueWriteBuffer(
 			g_gpuPF.queue, g_gpuPF.d_windPool,
@@ -1086,6 +1745,7 @@ bool AllocatePortalFlowBuffers()
 		);
 	}
 
+<<<<<<< Updated upstream
 	int initialPool = h_pts.size();
 	g_gpuPF.d_windPoolCount = clCreateBuffer(
 		g_gpuPF.context,
@@ -1106,6 +1766,244 @@ bool AllocatePortalFlowBuffers()
 	BuildFlatLeafPortalArrays(adjCount, adjList);
 
 	g_gpuPF.numLeaves = adjCount.size();
+=======
+
+
+	if (err) return false;
+
+	// =========================================================
+	// LEAF ADJ TABLE
+	// =========================================================
+	BuildLeafPortalTable();
+
+	// =========================================================
+	// PresetGPU 3 — Extract world solid triangles (CPU)
+	// =========================================================
+	if (g_gpuPreset >= 3)
+	{
+		ExtractWorldSolidTriangles();
+	}
+
+	// =========================================================
+	// PresetGPU 3 — Upload world triangles to GPU
+	// =========================================================
+	if (g_gpuPreset >= 3 && !g_worldTrisCPU.empty())
+	{
+		std::vector<WorldTriGPU> h_tris;
+		h_tris.reserve(g_worldTrisCPU.size());
+
+		for (const WorldTriCPU& t : g_worldTrisCPU)
+		{
+			WorldTriGPU gt;
+			gt.a = { t.a.x, t.a.y, t.a.z, 0.f };
+			gt.b = { t.b.x, t.b.y, t.b.z, 0.f };
+			gt.c = { t.c.x, t.c.y, t.c.z, 0.f };
+			h_tris.push_back(gt);
+		}
+
+		g_gpuPF.worldTriCount = (int)h_tris.size();
+
+		cl_int err2 = 0;
+		g_gpuPF.d_worldTris = clCreateBuffer(
+			g_gpuPF.context,
+			CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+			sizeof(WorldTriGPU) * g_gpuPF.worldTriCount,
+			h_tris.data(),
+			&err2
+		);
+
+		if (err2 != CL_SUCCESS)
+		{
+			Warning("[GPU-VIS][PRESET3] Failed to upload world triangles\n");
+			return false;
+		}
+
+		Msg("[GPU-VIS][PRESET3] Uploaded %d world triangles to GPU\n",
+			g_gpuPF.worldTriCount);
+	}
+
+
+	// =========================================================
+	// PresetGPU 3 — Build BVH (CPU)
+	// =========================================================
+	if (g_gpuPreset >= 3 && !g_worldTrisCPU.empty())
+	{
+		g_bvhTriIndices.resize(g_worldTrisCPU.size());
+		for (int i = 0; i < (int)g_worldTrisCPU.size(); i++)
+			g_bvhTriIndices[i] = i;
+
+		g_bvhBuildNodes.clear();
+		BuildBVHNode(0, (int)g_worldTrisCPU.size());
+
+		Msg("[GPU-VIS][PRESET3] Built BVH with %zu nodes\n",
+			g_bvhBuildNodes.size());
+	}
+
+	// =========================================================
+	// PresetGPU 3 — Upload BVH to GPU
+	// =========================================================
+	if (g_gpuPreset >= 3 && !g_bvhBuildNodes.empty())
+	{
+		std::vector<BVHNodeGPU> h_bvh;
+		h_bvh.resize(g_bvhBuildNodes.size());
+
+		for (size_t i = 0; i < g_bvhBuildNodes.size(); i++)
+		{
+			const BVHBuildNode& n = g_bvhBuildNodes[i];
+			BVHNodeGPU& g = h_bvh[i];
+
+			g.aabbMin = { n.mins.x, n.mins.y, n.mins.z, 0.f };
+			g.aabbMax = { n.maxs.x, n.maxs.y, n.maxs.z, 0.f };
+
+			g.left = n.left;
+			g.right = n.right;
+
+			g.firstPrim = n.firstTri;
+			g.primCount = n.triCount;
+		}
+
+		g_gpuPF.worldBVHCount = (int)h_bvh.size();
+
+		cl_int err3 = 0;
+		g_gpuPF.d_worldBVH = clCreateBuffer(
+			g_gpuPF.context,
+			CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+			sizeof(BVHNodeGPU) * g_gpuPF.worldBVHCount,
+			h_bvh.data(),
+			&err3
+		);
+
+		if (err3 != CL_SUCCESS)
+		{
+			Warning("[GPU-VIS][PRESET3] Failed to upload BVH to GPU\n");
+			return false;
+		}
+
+		Msg("[GPU-VIS][PRESET3] Uploaded BVH to GPU (%d nodes)\n",
+			g_gpuPF.worldBVHCount);
+	}
+
+
+	for (int i = 0; i < g_leafPortals.size(); i++)
+	{
+		if (g_leafPortals[i].size() > 50)
+		{
+			Msg("[DEBUG] Leaf %d has %zu portals\n", i, g_leafPortals[i].size());
+			break;
+		}
+	}
+
+	// =========================================================
+	// LEAF AABB EXTRACTION (CPU -> GPU)
+	// =========================================================
+	std::vector<LeafAABBGPU> h_leafAABBs;
+
+	// =========================================================
+	// PRESETGPU 2 — WORLD OCCLUDERS FROM SOLID LEAFS
+	// =========================================================
+
+	std::vector<WorldAABBGPU> h_worldAABBs;
+	h_worldAABBs.reserve(numleafs);
+
+	for (int i = 0; i < numleafs; i++)
+	{
+		const dleaf_t& L = dleafs[i];
+
+		// Skip non-solid leaves
+		if (!(L.contents & CONTENTS_SOLID))
+			continue;
+
+		// Skip sky / water / special contents
+		if (L.contents & CONTENTS_WATER)
+			continue;
+
+		WorldAABBGPU box;
+		box.mins = {
+			(float)L.mins[0],
+			(float)L.mins[1],
+			(float)L.mins[2]
+		};
+		box.maxs = {
+			(float)L.maxs[0],
+			(float)L.maxs[1],
+			(float)L.maxs[2]
+		};
+
+		// Reject degenerate leaves
+		if (box.mins.x >= box.maxs.x ||
+			box.mins.y >= box.maxs.y ||
+			box.mins.z >= box.maxs.z)
+			continue;
+
+		h_worldAABBs.push_back(box);
+	}
+
+	g_gpuPF.worldAABBCount = (int)h_worldAABBs.size();
+
+	if (g_gpuPF.worldAABBCount > 0)
+	{
+		g_gpuPF.d_worldAABBs = clCreateBuffer(
+			g_gpuPF.context,
+			CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+			sizeof(WorldAABBGPU) * g_gpuPF.worldAABBCount,
+			h_worldAABBs.data(),
+			&err
+		);
+
+		Msg("[GPU-VIS][ULTRA] Uploaded %d solid leaf occluders\n",
+			g_gpuPF.worldAABBCount);
+	}
+	else
+	{
+		g_gpuPF.d_worldAABBs = nullptr;
+	}
+
+	h_leafAABBs.reserve(numleafs);
+
+	for (int i = 0; i < numleafs; i++)
+	{
+		dleaf_t* L = &dleafs[i];
+
+		LeafAABBGPU aabb;
+		aabb.mins = {
+			(float)L->mins[0],
+			(float)L->mins[1],
+			(float)L->mins[2]
+		};
+		aabb.maxs = {
+			(float)L->maxs[0],
+			(float)L->maxs[1],
+			(float)L->maxs[2]
+		};
+
+		h_leafAABBs.push_back(aabb);
+	}
+
+	// =========================================================
+	// LEAF AABB → GPU (HYBRID VIS)
+	// =========================================================
+	g_gpuPF.d_leafAABBs = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		sizeof(LeafAABBGPU) * h_leafAABBs.size(),
+		h_leafAABBs.data(),
+		&err
+	);
+
+	if (err != CL_SUCCESS)
+	{
+		Warning("[LEAF-HYBRID] Failed to upload leaf AABBs to GPU\n");
+		return false;
+	}
+
+	Msg("[LEAF-HYBRID] Uploaded %zu leaf AABBs to GPU\n", h_leafAABBs.size());
+
+	std::vector<int> h_leafCount;
+	std::vector<int> h_leafList;
+	BuildFlatLeafPortalArrays(h_leafCount, h_leafList);
+
+	g_gpuPF.numLeaves = (int)h_leafCount.size();
+>>>>>>> Stashed changes
 	g_gpuPF.maxPerLeaf = g_maxPerLeaf;
 
 	g_gpuPF.d_leafPortalCount = clCreateBuffer(
@@ -1155,6 +2053,7 @@ bool AllocatePortalFlowBuffers()
 		g_gpuPF.context, CL_MEM_READ_WRITE, stateBytes, nullptr, &err);
 	if (err) return false;
 
+<<<<<<< Updated upstream
 	g_gpuFF.d_stateCount = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
@@ -1196,6 +2095,16 @@ bool AllocatePortalFlowBuffers()
 		g_gpuPF.queue, g_gpuFF.d_stateCur,
 		CL_TRUE, 0, stateBytes,
 		init.data(),
+=======
+	// NextCount = 0 (normal)
+	clEnqueueWriteBuffer(
+		g_gpuPF.queue,
+		g_gpuFF.d_stateNextCount,
+		CL_TRUE,
+		0,
+		sizeof(int),
+		&zero,
+>>>>>>> Stashed changes
 		0, nullptr, nullptr
 	);
 
@@ -1316,6 +2225,7 @@ void GPU_CPU_SampleCompare()
 }
 
 
+<<<<<<< Updated upstream
 void PortalFlow_FullGPU()
 {
 	Msg("[GPU-VIS] FULL GPU Flood fill starting...\n");
@@ -1502,6 +2412,340 @@ void PortalFlow_FullGPU()
 
 
 
+=======
+void RunKernel_WorldOcclusion()
+{
+	if (!g_gpuPF.k_ultraWorldOcc) return;
+	if (!g_gpuPF.d_worldAABBs || g_gpuPF.worldBrushCount <= 0) return;
+
+	size_t gsz = g_gpuPF.portalCount;
+
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 0, sizeof(cl_mem), &g_gpuPF.d_portalLeaf);
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 1, sizeof(cl_mem), &g_gpuPF.d_origins);
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 2, sizeof(cl_mem), &g_gpuPF.d_worldAABBs);
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 3, sizeof(int), &g_gpuPF.worldBrushCount);
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 4, sizeof(cl_mem), &g_gpuPF.d_ultraRejectMask);
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 5, sizeof(int), &g_gpuPF.portalCount);
+	clSetKernelArg(g_gpuPF.k_ultraWorldOcc, 6, sizeof(int), &g_gpuPF.portalLongs);
+
+	clEnqueueNDRangeKernel(
+		g_gpuPF.queue,
+		g_gpuPF.k_ultraWorldOcc,
+		1, nullptr, &gsz, nullptr,
+		0, nullptr, nullptr
+	);
+
+	clFinish(g_gpuPF.queue);
+}
+
+inline void CopyUltraTempToFinal()
+{
+	size_t bytes = g_gpuPF.portalCount * g_gpuPF.portalLongs * sizeof(int);
+	clEnqueueCopyBuffer(
+		g_gpuPF.queue,
+		g_gpuPF.d_ultraMaskTemp,
+		g_gpuPF.d_ultraMask,
+		0, 0, bytes,
+		0, nullptr, nullptr
+	);
+	clFinish(g_gpuPF.queue);
+}
+
+
+
+void PortalFlow_ULTRA_GPU()
+{
+	if (g_gpuPreset < 2)
+		return;
+
+	if (g_gpuPreset >= 2)
+	{
+		Msg("[GPU-VIS][ULTRA] World brush occlusion pass...\n");
+		RunKernel_WorldOcclusion();
+	}
+
+	if (g_gpuPreset >= 3)
+	{
+		Msg("[GPU-VIS][ULTRA] Ray/BVH occlusion pass...\n");
+
+		size_t gsz = g_gpuPF.portalCount;
+		cl_int err = 0;
+
+		// UTILISER LES VRAIS BUFFERS
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 0, sizeof(cl_mem), &g_gpuPF.d_portalCenters);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 1, sizeof(cl_mem), &g_gpuFF.d_mightSee);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 2, sizeof(cl_mem), &g_gpuPF.d_ultraRejectMask);
+
+		// REMPLACE PAR LE NOM RÉEL DE TON BUFFER TRIANGLE
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 3, sizeof(cl_mem), &g_gpuPF.d_worldTris);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 4, sizeof(int), &g_gpuPF.worldTriCount);
+
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 5, sizeof(cl_mem), &g_gpuPF.d_worldBVH);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 6, sizeof(int), &g_gpuPF.worldBVHCount);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 7, sizeof(cl_mem), &g_gpuPF.d_portalVis);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 8, sizeof(int), &g_gpuPF.portalCount);
+		err |= clSetKernelArg(g_gpuPF.k_rayTriangleBVH, 9, sizeof(int), &g_gpuPF.portalLongs);
+
+		if (err != CL_SUCCESS)
+		{
+			Warning("[GPU-VIS][ULTRA] rayTriangleBVH arg error %d\n", err);
+			return;
+		}
+
+		err = clEnqueueNDRangeKernel(
+			g_gpuPF.queue,
+			g_gpuPF.k_rayTriangleBVH,
+			1, nullptr,
+			&gsz, nullptr,
+			0, nullptr, nullptr
+		);
+
+		if (err != CL_SUCCESS)
+		{
+			Warning("[GPU-VIS][ULTRA] rayTriangleBVH launch failed %d\n", err);
+			return;
+		}
+
+		clFinish(g_gpuPF.queue);
+	}
+}
+
+
+// ============================================================================
+// HYBRID VIS — RUN GPU FILTER
+// ============================================================================
+
+bool RunGPUHybridFilter()
+{
+	if (!g_gpuHybridVis.enabled)
+		return false;
+
+	int portalCount = g_gpuHybridVis.filterJob.portalCount;
+	int longs = g_gpuHybridVis.filterJob.portalLongs;
+
+	size_t maskBytes = portalCount * longs * sizeof(uint32_t);
+	uint32_t zero = 0;
+
+	// Reset GPU mask
+	clEnqueueFillBuffer(
+		g_gpuPF.queue,
+		g_gpuHybridVis.filterJob.result.d_mightSeeMask,
+		&zero,
+		sizeof(uint32_t),
+		0,
+		maskBytes,
+		0, nullptr, nullptr
+	);
+
+	size_t global = portalCount;
+
+	cl_int err = 0;
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 0, sizeof(cl_mem), &g_gpuPF.d_origins);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 1, sizeof(cl_mem), &g_gpuPF.d_portalNormals);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 2, sizeof(cl_mem), &g_gpuPF.d_worldTris);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 3, sizeof(cl_mem), &g_gpuPF.d_worldBVH);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 4, sizeof(cl_mem), &g_gpuHybridVis.filterJob.result.d_mightSeeMask);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 5, sizeof(int), &g_gpuPF.worldTriCount);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 6, sizeof(int), &g_gpuPF.worldBVHCount);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 7, sizeof(int), &portalCount);
+	err |= clSetKernelArg(g_gpuPF.k_hybridFilter, 8, sizeof(int), &longs);
+
+	if (err != CL_SUCCESS)
+	{
+		Warning("[HYBRID-VIS] Kernel arg error %d\n", err);
+		return false;
+	}
+
+	err = clEnqueueNDRangeKernel(
+		g_gpuPF.queue,
+		g_gpuPF.k_hybridFilter,
+		1, nullptr,
+		&global, nullptr,
+		0, nullptr, nullptr
+	);
+
+	if (err != CL_SUCCESS)
+	{
+		Warning("[HYBRID-VIS] Kernel launch failed %d\n", err);
+		return false;
+	}
+
+	clFinish(g_gpuPF.queue);
+
+	// Read back result
+	clEnqueueReadBuffer(
+		g_gpuPF.queue,
+		g_gpuHybridVis.filterJob.result.d_mightSeeMask,
+		CL_TRUE,
+		0,
+		maskBytes,
+		g_gpuHybridVis.cpuMightSeeMask.data(),
+		0, nullptr, nullptr
+	);
+
+
+	// ================= SAFETY CHECK =================
+	int totalBits = portalCount * longs * 32;
+	int keptBits = 0;
+
+	for (int i = 0; i < portalCount * longs; i++)
+	{
+		keptBits += __popcnt(g_gpuHybridVis.cpuMightSeeMask[i]);
+	}
+
+	float ratio = (float)keptBits / (float)totalBits;
+
+	Msg("[HYBRID-VIS] GPU kept %.2f%% visibility\n", ratio * 100.0f);
+
+
+	// Section desactivée pour l'instant car on veut être "agressif"
+	if (ratio < 0.005f)
+	{
+		Warning("[HYBRID-VIS] GPU rejected too much (%.2f%%), fallback CPU\n",
+			ratio * 100.0f);
+		return false;
+	}
+	// =================================================
+
+
+	Msg("[HYBRID-VIS] GPU hybrid filter completed\n");
+	return true;
+}
+
+
+bool RunGPULeafHybridFilter()
+{
+	if (!g_gpuLeafHybridVis.enabled)
+		return false;
+
+	int leafCount = g_gpuLeafHybridVis.leafCount;
+	int longs = g_gpuLeafHybridVis.leafLongs;
+
+	size_t maskBytes = leafCount * longs * sizeof(visword_t);
+	int zero = 0;
+
+	clEnqueueFillBuffer(
+		g_gpuPF.queue,
+		g_gpuLeafHybridVis.result.d_leafMightSee,
+		&zero,
+		sizeof(int),
+		0,
+		maskBytes,
+		0, nullptr, nullptr
+	);
+
+	size_t global = (size_t)leafCount * (size_t)leafCount;
+
+	clSetKernelArg(g_gpuPF.k_leafHybridFilter, 0, sizeof(cl_mem), &g_gpuPF.d_leafAABBs);
+	clSetKernelArg(g_gpuPF.k_leafHybridFilter, 1, sizeof(cl_mem),
+		&g_gpuLeafHybridVis.result.d_leafMightSee);
+	clSetKernelArg(g_gpuPF.k_leafHybridFilter, 2, sizeof(int), &leafCount);
+	clSetKernelArg(g_gpuPF.k_leafHybridFilter, 3, sizeof(int), &longs);
+
+	clEnqueueNDRangeKernel(
+		g_gpuPF.queue,
+		g_gpuPF.k_leafHybridFilter,
+		1, nullptr, &global, nullptr,
+		0, nullptr, nullptr
+	);
+
+	clFinish(g_gpuPF.queue);
+
+	clEnqueueReadBuffer(
+		g_gpuPF.queue,
+		g_gpuLeafHybridVis.result.d_leafMightSee,
+		CL_TRUE,
+		0,
+		maskBytes,
+		g_gpuLeafHybridVis.result.cpuLeafMightSee.data(),
+		0, nullptr, nullptr
+	);
+
+	Msg("[LEAF-HYBRID] GPU leaf filter completed\n");
+	return true;
+}
+
+
+
+// ============================================================================
+// HYBRID VIS — APPLY FILTER TO CPU
+// ============================================================================
+
+void ApplyHybridMightSeeToCPU()
+{
+	int portalCount = g_gpuHybridVis.filterJob.portalCount;
+	int longs = g_gpuHybridVis.filterJob.portalLongs;
+
+	for (int p = 0; p < portalCount; p++)
+	{
+		portal_t* P = sorted_portals[p];
+
+		uint32_t* gpu = &g_gpuHybridVis.cpuMightSeeMask[p * longs];
+		uint32_t* dst = (uint32_t*)P->portalHybridMask;
+
+		for (int w = 0; w < longs; w++)
+			dst[w] &= gpu[w];
+	}
+
+	Msg("[HYBRID-VIS] GPU hybrid mask stored (non destructive)\n");
+}
+
+
+
+void ApplyLeafHybridToPortals()
+{
+	int portalCount = g_numportals * 2;
+	int portalLongs = portallongs;
+
+	for (int p = 0; p < portalCount; p++)
+	{
+		portal_t* P = sorted_portals[p];
+		int leafA = P->leaf;
+
+		uint32_t* cpu = (uint32_t*)P->portalflood;
+
+		for (int q = 0; q < portalCount; q++)
+		{
+			portal_t* Q = sorted_portals[q];
+			int leafB = Q->leaf;
+
+			int word = leafB >> 5;
+			int bit = 1 << (leafB & 31);
+
+			if (!(g_gpuLeafHybridVis.result.cpuLeafMightSee[leafA * g_gpuLeafHybridVis.leafLongs + word] & bit))
+			{
+				// Leaf cannot see → portal cannot see
+				cpu[q >> 5] &= ~(1 << (q & 31));
+			}
+		}
+	}
+
+	Msg("[LEAF-HYBRID] Leaf visibility applied to portal flood\n");
+}
+
+
+void PortalFlow_CPU_Ordered(int iThread, int workIndex)
+{
+	PortalFlow_CPU(iThread, g_portalOrderCPU[workIndex]);
+}
+
+
+void BuildPortalOrderByMightSee()
+{
+	int portalCount = g_numportals * 2;
+	g_portalOrderCPU.resize(portalCount);
+
+	for (int i = 0; i < portalCount; i++)
+		g_portalOrderCPU[i] = i;
+
+	std::sort(g_portalOrderCPU.begin(), g_portalOrderCPU.end(),
+		[](int a, int b)
+		{
+			return sorted_portals[a]->nummightsee > sorted_portals[b]->nummightsee;
+		});
+}
+
+>>>>>>> Stashed changes
 void PortalFlow_CPU(int iThread, int portalnum)
 {
 	threaddata_t	data;
@@ -1570,7 +2814,7 @@ void SimpleFlood(portal_t* srcportal, int leafnum)
 
 /*
 ==============
-BasePortalVis [OLD]
+BasePortalVis
 ==============
 */
 
@@ -1603,6 +2847,9 @@ void BasePortalVis(int iThread, int portalnum)
 
 	p->portalvisGPU = (byte*)malloc(portalbytes);
 	memset(p->portalvisGPU, 0, portalbytes);
+
+	p->portalHybridMask = (byte*)malloc(portalbytes);
+	memset(p->portalHybridMask, 0xFF, portalbytes); // tout visible par défaut
 
 	//
 	// test the given portal against all of the portals in the map
