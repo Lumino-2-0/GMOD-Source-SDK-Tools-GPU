@@ -602,6 +602,7 @@ struct Source1AppidInfo_t
 } g_Source1Appids[]
 {
 	{ 220, "Half-Life 2" },
+	{ 4000, "Garry's Mod  [GMOD]" },
 	{ 320, "Half-Life 2: Deathmatch" },
 	{ 340, "Half-Life 2: Lost Coast" },
 	// Deprecated.

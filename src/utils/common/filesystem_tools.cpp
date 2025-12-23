@@ -20,11 +20,6 @@
 #include "KeyValues.h"
 #include "tier2/tier2.h"
 
-#ifdef MPI
-	#include "vmpi.h"
-	#include "vmpi_tools_shared.h"
-	#include "vmpi_filesystem.h"
-#endif
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include <tier0/memdbgon.h>

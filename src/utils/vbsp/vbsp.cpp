@@ -13,7 +13,7 @@
 #include "writebsp.h"
 #include "tier0/icommandline.h"
 #include "materialsystem/imaterialsystem.h"
-#include "map.h"
+#include "<map>.h"
 #include "tools_minidump.h"
 #include "materialsub.h"
 #include "loadcmdline.h"

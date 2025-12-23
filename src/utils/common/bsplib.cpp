@@ -15,7 +15,6 @@
 #include "bsptreedata.h"
 #include "cmodel.h"
 #include "gamebspfile.h"
-#include "materialsystem/imaterial.h"
 #include "materialsystem/hardwareverts.h"
 #include "utlbuffer.h"
 #include "utlrbtree.h"
@@ -25,11 +24,8 @@
 #include "physdll.h"
 #include "tier0/dbg.h"
 #include "lumpfiles.h"
-#include "vtf/vtf.h"
 #include "lzma/lzma.h"
 #include "tier1/lzmaDecoder.h"
-
-#include "tier0/memdbgon.h"
 
 //=============================================================================
 

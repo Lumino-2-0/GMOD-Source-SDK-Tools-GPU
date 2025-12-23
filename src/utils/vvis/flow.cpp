@@ -34,13 +34,6 @@
 #define VIS_EPSILON_CLIP        1e-5f
 #define VIS_EPSILON_WINDING     1e-5f
 #define VIS_EPSILON_COLINEAR    1e-6f
-<<<<<<< Updated upstream
-
-// Remplace l'ancien ON_VIS_EPSILON du CPU
-#undef ON_VIS_EPSILON
-#define ON_VIS_EPSILON VIS_EPSILON_CLIP
-=======
->>>>>>> Stashed changes
 
 
 static std::unordered_map<uint64_t, bool> g_gpuSeparatorCache;
@@ -75,10 +68,6 @@ bool UploadDynamicWindingsToGPU(cl_context ctx, cl_command_queue q, cl_int* errO
 // Patch GPU protos
 // =======================================================
 bool AllocatePortalFlowBuffers();
-<<<<<<< Updated upstream
-
-=======
->>>>>>> Stashed changes
 void BuildLeafPortalTable();
 
 // Utilisé pour reconstruire les adjacency tables
@@ -175,12 +164,12 @@ bool InitOpenCL_PortalFlow()
 
 	cl_int err = 0;
 
-	// -------------------------------------------------------
+	// ===========================================================
 	// PLATFORM
-	// -------------------------------------------------------
+	// ===========================================================
 	cl_uint platformCount = 0;
-	clGetPlatformIDs(0, nullptr, &platformCount);
-	if (platformCount == 0)
+	err = clGetPlatformIDs(0, nullptr, &platformCount);
+	if (err != CL_SUCCESS || platformCount == 0)
 	{
 		Warning("[GPU-VIS] No OpenCL platform found.\n");
 		return false;
@@ -190,81 +179,76 @@ bool InitOpenCL_PortalFlow()
 	clGetPlatformIDs(platformCount, platforms.data(), nullptr);
 	g_gpuPF.platform = platforms[0];
 
-	// -------------------------------------------------------
+	// ===========================================================
 	// DEVICE (GPU then fallback CPU)
-	// -------------------------------------------------------
+	// ===========================================================
 	cl_uint deviceCount = 0;
-	err = clGetDeviceIDs(g_gpuPF.platform, CL_DEVICE_TYPE_GPU,
-		0, nullptr, &deviceCount);
+	err = clGetDeviceIDs(g_gpuPF.platform, CL_DEVICE_TYPE_GPU, 0, nullptr, &deviceCount);
 
 	if (err != CL_SUCCESS || deviceCount == 0)
 	{
-		Warning("[GPU-VIS] No GPU, trying CPU...\n");
-		err = clGetDeviceIDs(g_gpuPF.platform, CL_DEVICE_TYPE_CPU,
-			0, nullptr, &deviceCount);
+		Warning("[GPU-VIS] No GPU found, trying CPU...\n");
+		err = clGetDeviceIDs(g_gpuPF.platform, CL_DEVICE_TYPE_CPU, 0, nullptr, &deviceCount);
 		if (err != CL_SUCCESS || deviceCount == 0)
 		{
-			Warning("[GPU-VIS] No OpenCL device available.\n");
+			Warning("[GPU-VIS] No usable OpenCL device.\n");
 			return false;
 		}
 	}
 
 	std::vector<cl_device_id> devices(deviceCount);
-	clGetDeviceIDs(g_gpuPF.platform, CL_DEVICE_TYPE_ALL, deviceCount,
-		devices.data(), nullptr);
+	clGetDeviceIDs(g_gpuPF.platform, CL_DEVICE_TYPE_ALL, deviceCount, devices.data(), nullptr);
 	g_gpuPF.device = devices[0];
 
-	// -------------------------------------------------------
+	// ===========================================================
 	// CONTEXT
-	// -------------------------------------------------------
-	g_gpuPF.context = clCreateContext(nullptr, 1,
-		&g_gpuPF.device, nullptr, nullptr, &err);
-
+	// ===========================================================
+	g_gpuPF.context = clCreateContext(nullptr, 1, &g_gpuPF.device, nullptr, nullptr, &err);
 	if (err != CL_SUCCESS)
 	{
-		Warning("[GPU-VIS] Failed to create OpenCL context.\n");
+		Warning("[GPU-VIS] Failed to create context.\n");
 		return false;
 	}
 
-	// -------------------------------------------------------
-	// QUEUE
-	// -------------------------------------------------------
+	// ===========================================================
+	// COMMAND QUEUE
+	// ===========================================================
 #if defined(CL_VERSION_2_0)
-	const cl_queue_properties props[] =
-	{ CL_QUEUE_PROPERTIES, 0, 0 };
+	const cl_queue_properties props[] = { CL_QUEUE_PROPERTIES, 0, 0 };
 	g_gpuPF.queue = clCreateCommandQueueWithProperties(
 		g_gpuPF.context, g_gpuPF.device, props, &err);
 #else
-	g_gpuPF.queue = clCreateCommandQueue(
-		g_gpuPF.context, g_gpuPF.device, 0, &err);
+	g_gpuPF.queue = clCreateCommandQueue(g_gpuPF.context, g_gpuPF.device, 0, &err);
 #endif
 
 	if (err != CL_SUCCESS)
 	{
-		Warning("[GPU-VIS] Failed to create command queue.\n");
+		Warning("[GPU-VIS] Failed to create queue.\n");
 		return false;
 	}
 
-	// -------------------------------------------------------
-	// PROGRAM FROM SOURCE
-	// -------------------------------------------------------
+	// ===========================================================
+	// BUILD PROGRAM
+	// ===========================================================
 	const char* src = g_gpuPortalFlowKernels;
 	size_t srcSize = strlen(g_gpuPortalFlowKernels);
 
 	g_gpuPF.program = clCreateProgramWithSource(
-		g_gpuPF.context, 1, &src, &srcSize, &err);
-
+		g_gpuPF.context,
+		1,
+		&src,
+		&srcSize,
+		&err
+	);
 	if (err != CL_SUCCESS)
 	{
-		Warning("[GPU-VIS] Failed to create OpenCL program.\n");
+		Warning("[GPU-VIS] Failed program creation.\n");
 		return false;
 	}
 
 	const char* opts = "-cl-fast-relaxed-math -cl-std=CL2.0";
-	err = clBuildProgram(g_gpuPF.program,
-		1, &g_gpuPF.device, opts, nullptr, nullptr);
+	err = clBuildProgram(g_gpuPF.program, 1, &g_gpuPF.device, opts, nullptr, nullptr);
 
-	// PRINT BUILD LOG
 	{
 		size_t logSize = 0;
 		clGetProgramBuildInfo(g_gpuPF.program, g_gpuPF.device,
@@ -274,39 +258,23 @@ bool InitOpenCL_PortalFlow()
 		{
 			std::vector<char> log(logSize);
 			clGetProgramBuildInfo(g_gpuPF.program, g_gpuPF.device,
-				CL_PROGRAM_BUILD_LOG,
-				logSize, log.data(), nullptr);
+				CL_PROGRAM_BUILD_LOG, logSize, log.data(), nullptr);
 			Msg("[GPU-VIS] Build log:\n%s\n", log.data());
 		}
 	}
 
 	if (err != CL_SUCCESS)
 	{
-		Warning("[GPU-VIS] Failed to build kernels.\n");
+		Warning("[GPU-VIS] Failed to build GPU kernels.\n");
 		return false;
 	}
 
-	// -------------------------------------------------------
-	// LOAD KERNELS
-	// -------------------------------------------------------
 	cl_int kerr = 0;
 
-	g_gpuPF.k_resetPool = clCreateKernel(
-		g_gpuPF.program, "resetWindingPool", &kerr);
+	// ===========================================================
+	// LOAD ALL KERNELS A1 -> A6
+	// ===========================================================
 
-<<<<<<< Updated upstream
-	g_gpuPF.k_gpuClipWinding = clCreateKernel(
-		g_gpuPF.program, "gpuChopWinding", &kerr);
-
-	g_gpuPF.k_gpuGenerateSep = clCreateKernel(
-		g_gpuPF.program, "gpuGenerateSeparators", &kerr);
-
-	g_gpuPF.k_gpuClipToSep = clCreateKernel(
-		g_gpuPF.program, "gpuClipToSeparators", &kerr);
-
-	g_gpuPF.k_expand = clCreateKernel(
-		g_gpuPF.program, "portalFlowExpand", &kerr);
-=======
 	
 
 	g_gpuPF.k_ultraWorldOcc = clCreateKernel(g_gpuPF.program, "ultra_worldOcclusion", &kerr);
@@ -343,17 +311,14 @@ bool InitOpenCL_PortalFlow()
 		Warning("[GPU-VIS] Failed to create SeparatorReject_MultiRay kernel\n");
 		return false;
 	}
->>>>>>> Stashed changes
 
 	g_gpuPF.initialized = true;
 
-	Msg("[GPU-VIS] OpenCL PortalFlow READY.\n");
+	Msg("[GPU-VIS] OpenCL PortalFlow READY (all kernels loaded).\n");
 	return true;
 }
 
 
-<<<<<<< Updated upstream
-=======
 // ============================================================================
 // HYBRID VIS — INIT
 // ============================================================================
@@ -472,7 +437,6 @@ bool InitGPULeafHybridVis()
 }
 
 
->>>>>>> Stashed changes
 void ShutdownOpenCL_PortalFlow()
 {
 	if (!g_gpuPF.initialized)
@@ -496,14 +460,11 @@ void ShutdownOpenCL_PortalFlow()
 	REL(d_windingPoints);
 	REL(d_windingOffsets);
 	REL(d_windingCounts);
-<<<<<<< Updated upstream
-=======
 	REL(g_gpuPF.d_worldAABBs);
 	REL(g_gpuPF.d_worldBVH);
 	REL(g_gpuPF.d_portalArea);
 	REL(g_gpuPF.d_areaportals);
 	REL(g_gpuPF.d_worldTris);
->>>>>>> Stashed changes
 
 #undef REL
 
@@ -745,46 +706,43 @@ order goes source, pass, target.  If the order goes pass, source, target then
 flipclip should be set.
 ==============
 */
-winding_t* ClipToSeperators(
-	winding_t* source,
-	winding_t* pass,
-	winding_t* target,
-	bool flipclip,
-	pstack_t* stack
-) {
-	int i, j, k, l;
-	plane_t plane;
-	Vector v1, v2;
-	float d;
-	float length;
-	int counts[3];
-	bool fliptest;
+winding_t* ClipToSeperators(winding_t* source, winding_t* pass, winding_t* target, bool flipclip, pstack_t* stack)
+{
+	int			i, j, k, l;
+	plane_t		plane;
+	Vector		v1, v2;
+	float		d;
+	vec_t		length;
+	int			counts[3];
+	bool		fliptest;
 
-	if (!source || !pass || !target)
-		return target;
-
-	// === LOOP EXACT CPU ===
+	// check all combinations	
 	for (i = 0; i < source->numpoints; i++)
 	{
 		l = (i + 1) % source->numpoints;
-
 		VectorSubtract(source->points[l], source->points[i], v1);
 
+		// fing a vertex of pass that makes a plane that puts all of the
+		// vertexes of pass on the front side and all of the vertexes of
+		// source on the back side
 		for (j = 0; j < pass->numpoints; j++)
 		{
 			VectorSubtract(pass->points[j], source->points[i], v2);
 
-			// normal = v1 × v2
 			plane.normal[0] = v1[1] * v2[2] - v1[2] * v2[1];
 			plane.normal[1] = v1[2] * v2[0] - v1[0] * v2[2];
 			plane.normal[2] = v1[0] * v2[1] - v1[1] * v2[0];
 
-			// invalid plane?
-			length = DotProduct(plane.normal, plane.normal);
-			if (length < VIS_EPSILON_WINDING)
+			// if points don't make a valid plane, skip it
+
+			length = plane.normal[0] * plane.normal[0]
+				+ plane.normal[1] * plane.normal[1]
+				+ plane.normal[2] * plane.normal[2];
+
+			if (length < ON_VIS_EPSILON)
 				continue;
 
-			length = 1.0f / sqrt(length);
+			length = 1 / sqrt(length);
 
 			plane.normal[0] *= length;
 			plane.normal[1] *= length;
@@ -792,80 +750,99 @@ winding_t* ClipToSeperators(
 
 			plane.dist = DotProduct(pass->points[j], plane.normal);
 
-			// ------------------------
-			// Determine flip direction
-			// ------------------------
+			//
+			// find out which side of the generated seperating plane has the
+			// source portal
+			//
+#if 1
 			fliptest = false;
 			for (k = 0; k < source->numpoints; k++)
 			{
 				if (k == i || k == l)
 					continue;
-
 				d = DotProduct(source->points[k], plane.normal) - plane.dist;
-
-				if (d < -VIS_EPSILON_CLIP)
-				{
+				if (d < -ON_VIS_EPSILON)
+				{	// source is on the negative side, so we want all
+					// pass and target on the positive side
 					fliptest = false;
 					break;
 				}
-				else if (d > VIS_EPSILON_CLIP)
-				{
+				else if (d > ON_VIS_EPSILON)
+				{	// source is on the positive side, so we want all
+					// pass and target on the negative side
 					fliptest = true;
 					break;
 				}
 			}
 			if (k == source->numpoints)
-				continue; // Degenerate plane
-
-			// Flip if needed
+				continue;		// planar with source portal
+#else
+			fliptest = flipclip;
+#endif
+			//
+			// flip the normal if the source portal is backwards
+			//
 			if (fliptest)
 			{
 				VectorSubtract(vec3_origin, plane.normal, plane.normal);
 				plane.dist = -plane.dist;
 			}
-
-			// ------------------------
-			// Check pass side
-			// ------------------------
+#if 1
+			//
+			// if all of the pass portal points are now on the positive side,
+			// this is the seperating plane
+			//
 			counts[0] = counts[1] = counts[2] = 0;
 			for (k = 0; k < pass->numpoints; k++)
 			{
-				if (k == j) continue;
-
+				if (k == j)
+					continue;
 				d = DotProduct(pass->points[k], plane.normal) - plane.dist;
-
-				if (d < -VIS_EPSILON_CLIP)
+				if (d < -ON_VIS_EPSILON)
 					break;
-				else if (d > VIS_EPSILON_CLIP)
+				else if (d > ON_VIS_EPSILON)
 					counts[0]++;
 				else
 					counts[2]++;
 			}
 			if (k != pass->numpoints)
-				continue;
+				continue;	// points on negative side, not a seperating plane
 
 			if (!counts[0])
-				continue; // coplanar → skip
-
-			// Final flip if required by CPU logic
+				continue;	// planar with seperating plane
+#else
+			k = (j + 1) % pass->numpoints;
+			d = DotProduct(pass->points[k], plane.normal) - plane.dist;
+			if (d < -ON_VIS_EPSILON)
+				continue;
+			k = (j + pass->numpoints - 1) % pass->numpoints;
+			d = DotProduct(pass->points[k], plane.normal) - plane.dist;
+			if (d < -ON_VIS_EPSILON)
+				continue;
+#endif
+			//
+			// flip the normal if we want the back side
+			//
 			if (flipclip)
 			{
 				VectorSubtract(vec3_origin, plane.normal, plane.normal);
 				plane.dist = -plane.dist;
 			}
 
-			// ------------------------
-			// CLIP TARGET by plane
-			// ------------------------
+			//
+			// clip target by the seperating plane
+			//
 			target = ChopWinding(target, stack, &plane);
 			if (!target)
-				return NULL; // fully clipped → not visible
+				return NULL;		// target is not visible
+
+			// JAY: End the loop, no need to find additional separators on this edge ?
+//			j = pass->numpoints;
 		}
 	}
 
 	return target;
 }
-
 
 
 class CPortalTrace
@@ -1268,8 +1245,6 @@ void BuildFlatLeafPortalArrays(std::vector<int>& outCount, std::vector<int>& out
 //
 */
 
-<<<<<<< Updated upstream
-=======
 // ============================================================================
 // PresetGPU 3 — Extract solid world triangles from BSP (CPU)
 // ============================================================================
@@ -1408,7 +1383,6 @@ static int BuildBVHNode(int start, int count)
 	g_bvhBuildNodes[nodeIndex] = node;
 	return nodeIndex;
 }
->>>>>>> Stashed changes
 
 bool AllocatePortalFlowBuffers()
 {
@@ -1418,12 +1392,12 @@ bool AllocatePortalFlowBuffers()
 	cl_int err = 0;
 	int zero = 0;
 
-	// ----------------------------------------
-	// PARAMÈTRES PORTAILS
-	// ----------------------------------------
+	// ---------------------------------------------------------
+	// PORTAL PARAMS
+	// ---------------------------------------------------------
 	g_gpuPF.portalCount = g_numportals * 2;
 	g_gpuPF.portalLongs = portallongs;
-
+	g_gpuFF.startPortal = 0;
 	const int portalCount = g_gpuPF.portalCount;
 	const int longs = g_gpuPF.portalLongs;
 
@@ -1432,21 +1406,18 @@ bool AllocatePortalFlowBuffers()
 	const size_t radiusBytes = portalCount * sizeof(float);
 	const size_t planeBytes = portalCount * sizeof(float4);
 
-<<<<<<< Updated upstream
-=======
 
 	// ---------------------------------------------------------
 	// RELEASE PREVIOUS BUFFERS
 	// ---------------------------------------------------------
->>>>>>> Stashed changes
 #define REL(x) if(x){ clReleaseMemObject(x); x=nullptr; }
 
 	REL(g_gpuPF.d_portalVis);
 	REL(g_gpuPF.d_origins);
 	REL(g_gpuPF.d_radius);
 	REL(g_gpuPF.d_planes);
+	REL(g_gpuPF.d_winding4);
 	REL(g_gpuPF.d_portalLeaf);
-
 	REL(g_gpuPF.d_leafPortalCount);
 	REL(g_gpuPF.d_leafPortalList);
 
@@ -1458,7 +1429,6 @@ bool AllocatePortalFlowBuffers()
 
 	REL(g_gpuPF.d_windPool);
 	REL(g_gpuPF.d_windPoolCount);
-
 	REL(g_gpuPF.d_initSrcOffset);
 	REL(g_gpuPF.d_initSrcCount);
 
@@ -1466,28 +1436,6 @@ bool AllocatePortalFlowBuffers()
 
 #undef REL
 
-<<<<<<< Updated upstream
-	// =====================================================
-	// PORTALVIS GPU = copie CPU portalflood[] + auto-vis
-	// =====================================================
-	g_gpuPF.d_portalVis =
-		clCreateBuffer(g_gpuPF.context, CL_MEM_READ_WRITE, maskBytes, nullptr, &err);
-	if (err) return false;
-
-	{
-		std::vector<int> buf(portalCount * longs);
-
-		for (int p = 0; p < portalCount; p++)
-			memcpy(&buf[p * longs], sorted_portals[p]->portalflood,
-				longs * sizeof(int));
-
-		clEnqueueWriteBuffer(
-			g_gpuPF.queue, g_gpuPF.d_portalVis,
-			CL_TRUE, 0, buf.size() * sizeof(int), buf.data(),
-			0, nullptr, nullptr
-		);
-	}
-=======
 	// =========================================================
 	// ULTRA REJECT MASK (PresetGPU 2)
 	// =========================================================
@@ -1539,37 +1487,31 @@ bool AllocatePortalFlowBuffers()
 		init.data(),
 		0, nullptr, nullptr
 	);
->>>>>>> Stashed changes
 
-	// auto-visibilité
+	// FORCE SELF-VISIBILITY
 	for (int p = 0; p < portalCount; p++)
 	{
 		int byte = p >> 5;
 		int bit = 1 << (p & 31);
+		int word = 0;
 
 		size_t off = p * longs * sizeof(int) + byte * sizeof(int);
 
-		int w = 0;
 		clEnqueueReadBuffer(
 			g_gpuPF.queue, g_gpuPF.d_portalVis,
-			CL_TRUE, off, sizeof(int), &w,
+			CL_TRUE, off, sizeof(int), &word,
 			0, nullptr, nullptr
 		);
 
-		w |= bit;
+		word |= bit;
 
 		clEnqueueWriteBuffer(
 			g_gpuPF.queue, g_gpuPF.d_portalVis,
-			CL_TRUE, off, sizeof(int), &w,
+			CL_TRUE, off, sizeof(int), &word,
 			0, nullptr, nullptr
 		);
 	}
 
-<<<<<<< Updated upstream
-	// =====================================================
-	// ORIGINES / RADIUS / PLANES
-	// =====================================================
-=======
 
 
 	std::vector<float3> h_orig(portalCount);
@@ -1583,7 +1525,6 @@ bool AllocatePortalFlowBuffers()
 	// =========================================================
 	// CORE BUFFERS : origins / radius / planes
 	// =========================================================
->>>>>>> Stashed changes
 	g_gpuPF.d_origins = clCreateBuffer(
 		g_gpuPF.context, CL_MEM_READ_ONLY, originBytes, nullptr, &err);
 	if (err) return false;
@@ -1600,12 +1541,6 @@ bool AllocatePortalFlowBuffers()
 		g_gpuPF.context, CL_MEM_READ_ONLY, planeBytes, nullptr, &err);
 	if (err) return false;
 
-<<<<<<< Updated upstream
-	std::vector<float3> h_orig(portalCount);
-	std::vector<float>  h_rad(portalCount);
-	std::vector<float4> h_pl(portalCount);
-	std::vector<int>    h_leaf(portalCount);
-=======
 	g_gpuPF.d_winding4 = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY,
@@ -1613,7 +1548,6 @@ bool AllocatePortalFlowBuffers()
 		nullptr,
 		&err
 	);
->>>>>>> Stashed changes
 
 	for (int p = 0; p < portalCount; p++)
 	{
@@ -1621,25 +1555,64 @@ bool AllocatePortalFlowBuffers()
 
 		h_orig[p] = { P->origin.x, P->origin.y, P->origin.z };
 		h_rad[p] = P->radius;
-<<<<<<< Updated upstream
-		h_pl[p] = { P->plane.normal.x, P->plane.normal.y,
-					  P->plane.normal.z, P->plane.dist };
-=======
 		h_pl[p] = { P->plane.normal.x, P->plane.normal.y, P->plane.normal.z, P->plane.dist };
 		h_normals[p] = {P->plane.normal.x, P->plane.normal.y, P->plane.normal.z, 0.f};
 
 
->>>>>>> Stashed changes
 		h_leaf[p] = P->leaf;
+
+		// IMPORTANT: l’area est stockée sur le dleaf BSP correspondant au cluster/leaf du portal
+		// (le portal “leaf” ici correspond à un portalcluster)
+		int leafIdx = h_leaf[p];
+		int area = 0;
+		if (leafIdx >= 0 && leafIdx < numleafs)
+			area = dleafs[leafIdx].area;   // dleaf_t::area
+
+		h_area[p] = area;
 	}
 
-	clEnqueueWriteBuffer(g_gpuPF.queue, g_gpuPF.d_origins, CL_TRUE, 0, originBytes, h_orig.data(), 0, nullptr, nullptr);
-	clEnqueueWriteBuffer(g_gpuPF.queue, g_gpuPF.d_radius, CL_TRUE, 0, radiusBytes, h_rad.data(), 0, nullptr, nullptr);
-	clEnqueueWriteBuffer(g_gpuPF.queue, g_gpuPF.d_planes, CL_TRUE, 0, planeBytes, h_pl.data(), 0, nullptr, nullptr);
+	// =========================================================
+	// PORTAL -> AREA table (leaf -> area)
+	// =========================================================
 
-	// =====================================================
-	// PORTAL → LEAF TABLE
-	// =====================================================
+	for (int p = 0; p < portalCount; p++)
+	{
+		int leaf = h_leaf[p];
+		if (leaf >= 0 && leaf < numleafs)
+		{
+			// dleaf_t has an 'area' in Source BSPs
+			h_area[p] = dleafs[leaf].area;
+		}
+		else
+		{
+			h_area[p] = 0;
+		}
+	}
+
+
+	// Nouveau buffer : portal -> area
+	g_gpuPF.d_portalArea = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		portalCount * sizeof(int),
+		h_area.data(),
+		&err
+	);
+	if (err) return false;
+
+	clEnqueueWriteBuffer(g_gpuPF.queue, g_gpuPF.d_origins, CL_TRUE,
+		0, originBytes, h_orig.data(), 0, nullptr, nullptr);
+
+	clEnqueueWriteBuffer(g_gpuPF.queue, g_gpuPF.d_radius, CL_TRUE,
+		0, radiusBytes, h_rad.data(), 0, nullptr, nullptr);
+
+	clEnqueueWriteBuffer(g_gpuPF.queue, g_gpuPF.d_planes, CL_TRUE,
+		0, planeBytes, h_pl.data(), 0, nullptr, nullptr);
+
+
+	// =========================================================
+	// PORTAL -> LEAF table
+	// =========================================================
 	g_gpuPF.d_portalLeaf = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -1647,41 +1620,64 @@ bool AllocatePortalFlowBuffers()
 		h_leaf.data(),
 		&err
 	);
-	if (err) return false;
 
-	Msg("[GPU-VIS] portalLeaf uploaded (%d entries)\n", portalCount);
+	if (err != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS] ERROR creating d_portalLeaf buffer (err=%d)\n", err);
+		return false;
+	}
 
-	// =====================================================
-	// DYNAMIC WINDINGS → POOL 16M
-	// =====================================================
-	std::vector<int>    h_srcOff(portalCount);
-	std::vector<int>    h_srcCnt(portalCount);
-	std::vector<float3> h_pts;
+	Msg("[GPU-VIS] portalLeaf buffer uploaded (%d entries)\n", portalCount);
 
-	h_pts.reserve(200000);
+	// =========================================================
+	// PORTAL -> AREA BUFFER
+	// =========================================================
+	g_gpuPF.d_portalArea = clCreateBuffer(
+		g_gpuPF.context,
+		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+		portalCount * sizeof(int),
+		h_area.data(),
+		&err
+	);
 
-	int offset = 0;
+	if (err != CL_SUCCESS)
+	{
+		Warning("[GPU-VIS] ERROR creating d_portalArea buffer (err=%d)\n", err);
+		return false;
+	}
+
+	Msg("[GPU-VIS] portalArea buffer uploaded (%d entries)\n", portalCount);
+
+	// =========================================================
+	// DYNAMIC WINDINGS -> POOL GLOBAL
+	// =========================================================
+	g_initSrcOffsetCPU.resize(portalCount);
+	g_initSrcCountCPU.resize(portalCount);
+	g_initWindingCPU.clear();
+	g_totalWindingPoints = 0;
+
 	for (int p = 0; p < portalCount; p++)
 	{
 		winding_t* W = sorted_portals[p]->winding;
-		int cnt = W ? W->numpoints : 0;
+		int cnt = (W ? W->numpoints : 0);
 
-		h_srcOff[p] = offset;
-		h_srcCnt[p] = cnt;
+		g_initSrcOffsetCPU[p] = g_totalWindingPoints;
+		g_initSrcCountCPU[p] = cnt;
 
-		for (int i = 0; i < cnt; i++)
+		for (int k = 0; k < cnt; k++)
 		{
-			Vector& v = W->points[i];
-			h_pts.push_back({ v.x, v.y, v.z });
+			Vector& v = W->points[k];
+			g_initWindingCPU.push_back({ v.x, v.y, v.z });
 		}
-		offset += cnt;
+
+		g_totalWindingPoints += cnt;
 	}
 
 	g_gpuPF.d_initSrcOffset = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
 		sizeof(int) * portalCount,
-		h_srcOff.data(),
+		g_initSrcOffsetCPU.data(),
 		&err
 	);
 	if (err) return false;
@@ -1690,26 +1686,22 @@ bool AllocatePortalFlowBuffers()
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
 		sizeof(int) * portalCount,
-		h_srcCnt.data(),
+		g_initSrcCountCPU.data(),
 		&err
 	);
 	if (err) return false;
 
-	// POOL 16M float3
-	const int POOL_MAX = 16000000;
 
+	// ========= POOL GLOBAL =========
 	g_gpuPF.d_windPool = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_WRITE,
-		sizeof(float3) * POOL_MAX,
+		sizeof(float3) * GPU_WINDING_POOL_MAX,
 		nullptr,
 		&err
 	);
 	if (err) return false;
 
-<<<<<<< Updated upstream
-	if (!h_pts.empty())
-=======
 	// ===== POOL COUNTER (MANQUANT) =====
 	g_gpuPF.d_windPoolCount = clCreateBuffer(
 		g_gpuPF.context,
@@ -1734,39 +1726,18 @@ bool AllocatePortalFlowBuffers()
 
 
 	if (g_totalWindingPoints > 0)
->>>>>>> Stashed changes
 	{
 		clEnqueueWriteBuffer(
-			g_gpuPF.queue, g_gpuPF.d_windPool,
-			CL_TRUE, 0,
-			sizeof(float3) * h_pts.size(),
-			h_pts.data(),
+			g_gpuPF.queue,
+			g_gpuPF.d_windPool,
+			CL_TRUE,
+			0,
+			g_totalWindingPoints * sizeof(float3),
+			g_initWindingCPU.data(),
 			0, nullptr, nullptr
 		);
 	}
 
-<<<<<<< Updated upstream
-	int initialPool = h_pts.size();
-	g_gpuPF.d_windPoolCount = clCreateBuffer(
-		g_gpuPF.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		sizeof(int),
-		&initialPool,
-		&err
-	);
-	if (err) return false;
-
-	// =====================================================
-	// LEAF → PORTAL GRAPH
-	// =====================================================
-	BuildLeafPortalTable();
-
-	std::vector<int> adjCount;
-	std::vector<int> adjList;
-	BuildFlatLeafPortalArrays(adjCount, adjList);
-
-	g_gpuPF.numLeaves = adjCount.size();
-=======
 
 
 	if (err) return false;
@@ -2003,99 +1974,60 @@ bool AllocatePortalFlowBuffers()
 	BuildFlatLeafPortalArrays(h_leafCount, h_leafList);
 
 	g_gpuPF.numLeaves = (int)h_leafCount.size();
->>>>>>> Stashed changes
 	g_gpuPF.maxPerLeaf = g_maxPerLeaf;
 
 	g_gpuPF.d_leafPortalCount = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(int) * adjCount.size(),
-		adjCount.data(),
+		h_leafCount.size() * sizeof(int),
+		h_leafCount.data(),
 		&err
 	);
-	if (err) return false;
 
 	g_gpuPF.d_leafPortalList = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(int) * adjList.size(),
-		adjList.data(),
+		h_leafList.size() * sizeof(int),
+		h_leafList.data(),
 		&err
 	);
+
 	if (err) return false;
 
-	// =====================================================
-	// MIGHTSEE (portalflood CPU)
-	// =====================================================
+
+	// =========================================================
+	// MIGHTSEE (CPU -> GPU)
+	// =========================================================
 	std::vector<int> h_might(portalCount * longs);
 	for (int p = 0; p < portalCount; p++)
-		memcpy(&h_might[p * longs], sorted_portals[p]->portalflood, longs * sizeof(int));
+		memcpy(&h_might[p * longs], sorted_portals[p]->portalflood,
+			longs * sizeof(int));
 
 	g_gpuFF.d_mightSee = clCreateBuffer(
 		g_gpuPF.context,
 		CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-		sizeof(int) * h_might.size(),
+		h_might.size() * sizeof(int),
 		h_might.data(),
 		&err
 	);
 	if (err) return false;
 
-	// =====================================================
-	// FLOW STATE BUFFERS
-	// =====================================================
+
+
+	// =========================================================
+	// BFS STATES
+	// =========================================================
 	const size_t stateBytes = portalCount * sizeof(GPUFlowState);
 
 	g_gpuFF.d_stateCur = clCreateBuffer(
 		g_gpuPF.context, CL_MEM_READ_WRITE, stateBytes, nullptr, &err);
-	if (err) return false;
-
 	g_gpuFF.d_stateNext = clCreateBuffer(
 		g_gpuPF.context, CL_MEM_READ_WRITE, stateBytes, nullptr, &err);
-	if (err) return false;
-
-<<<<<<< Updated upstream
 	g_gpuFF.d_stateCount = clCreateBuffer(
-		g_gpuPF.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		sizeof(int),
-		(void*)&portalCount,
-		&err
-	);
-	if (err) return false;
-
-	int zero = 0;
+		g_gpuPF.context, CL_MEM_READ_WRITE, sizeof(int), nullptr, &err);
 	g_gpuFF.d_stateNextCount = clCreateBuffer(
-		g_gpuPF.context,
-		CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
-		sizeof(int),
-		&zero,
-		&err
-	);
-	if (err) return false;
+		g_gpuPF.context, CL_MEM_READ_WRITE, sizeof(int), nullptr, &err);
 
-	// init states
-	std::vector<GPUFlowState> init(portalCount);
-
-	for (int p = 0; p < portalCount; p++)
-	{
-		init[p].portal = p;
-		init[p].leaf = h_leaf[p];
-		init[p].mightOffset = p * longs;
-
-		init[p].firstPass = 1;
-
-		init[p].srcOffset = h_srcOff[p];
-		init[p].srcCount = h_srcCnt[p];
-
-		init[p].passOffset = -1;
-		init[p].passCount = 0;
-	}
-
-	clEnqueueWriteBuffer(
-		g_gpuPF.queue, g_gpuFF.d_stateCur,
-		CL_TRUE, 0, stateBytes,
-		init.data(),
-=======
 	// NextCount = 0 (normal)
 	clEnqueueWriteBuffer(
 		g_gpuPF.queue,
@@ -2104,16 +2036,78 @@ bool AllocatePortalFlowBuffers()
 		0,
 		sizeof(int),
 		&zero,
->>>>>>> Stashed changes
 		0, nullptr, nullptr
 	);
 
 	Msg("[GPU-VIS] PortalFlow GPU buffers allocated (%d portals, %d winding verts).\n",
-		portalCount, (int)h_pts.size());
+		portalCount, g_totalWindingPoints);
+
+
+	// =======================================================
+	// PRESETGPU 2 — WORLD BRUSH EXTRACTION (AABB)
+	// =======================================================
+	if (g_gpuPreset >= 2)
+	{
+		std::vector<WorldAABBGPU> h_worldAABBs;
+
+		for (int i = 0; i < numbrushes; i++)
+		{
+			const dbrush_t& brush = dbrushes[i];
+
+			// uniquement WORLD + SOLID
+			if (!(brush.contents & CONTENTS_SOLID))
+				continue;
+
+			Vector mins(1e30f, 1e30f, 1e30f);
+			Vector maxs(-1e30f, -1e30f, -1e30f);
+
+			for (int s = 0; s < brush.numsides; s++)
+			{
+				const dbrushside_t& side = dbrushsides[brush.firstside + s];
+				const dplane_t& plane = dplanes[side.planenum];
+
+				// On approxime via normales planes (conservatif)
+				Vector n = plane.normal * plane.dist;
+				mins.x = min(mins.x, n.x);
+				mins.y = min(mins.y, n.y);
+				mins.z = min(mins.z, n.z);
+				maxs.x = max(maxs.x, n.x);
+				maxs.y = max(maxs.y, n.y);
+				maxs.z = max(maxs.z, n.z);
+			}
+
+			WorldAABBGPU gpu;
+			gpu.mins = { mins.x, mins.y, mins.z, 0.f };
+			gpu.maxs = { maxs.x, maxs.y, maxs.z, 0.f };
+			h_worldAABBs.push_back(gpu);
+		}
+
+		g_gpuPF.worldBrushCount = (int)h_worldAABBs.size();
+
+		if (g_gpuPF.worldBrushCount > 0)
+		{
+			cl_int err;
+			g_gpuPF.d_worldAABBs = clCreateBuffer(
+				g_gpuPF.context,
+				CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				sizeof(WorldAABBGPU) * g_gpuPF.worldBrushCount,
+				h_worldAABBs.data(),
+				&err
+			);
+
+			if (err != CL_SUCCESS)
+			{
+				Warning("[GPU-VIS][WORLD] Failed to upload world AABBs\n");
+				return false;
+			}
+
+			Msg("[GPU-VIS][WORLD] Uploaded %d world brush AABBs\n",
+				g_gpuPF.worldBrushCount);
+		}
+	}
 
 	return true;
 }
-
 
 
 void DumpGPUPoolPolygon(int offset, int count)
@@ -2146,273 +2140,50 @@ void GPU_CPU_SampleCompare()
 
 	int mismatches = 0;
 
-	for (int p = 0; p < portalCount; ++p)
+	for (int p = 0; p < portalCount; p++)
 	{
-		portal_t* P = sorted_portals[p];
-
-		int* cpu = (int*)P->portalvis;
-		int* gpu = (int*)P->portalvisGPU;
-
-		if (!gpu)
-		{
-			Warning("[TryGPU] Missing GPU buffer for portal %d\n", p);
-			mismatches++;
-			continue;
-		}
+		int* cpu = (int*)sorted_portals[p]->portalvis;
+		int* gpu = (int*)sorted_portals[p]->portalvisGPU;
 
 		for (int w = 0; w < longs; w++)
 		{
-			int c = cpu[w];
-			int g = gpu[w];
+			int cm = cpu[w];
+			int gm = gpu[w];
 
-			// -----------------------------------------
-			// 1) FORCE SELF-VISIBILITY (CPU le fait toujours)
-			// -----------------------------------------
+			if (w == longs - 1)
+			{
+				int leftover = portalCount & 31;
+				if (leftover != 0)
+				{
+					int mask = (1 << leftover) - 1;
+					cm &= mask;
+					gm &= mask;
+				}
+			}
+
 			if (w == (p >> 5))
 			{
 				int bit = 1 << (p & 31);
-				c |= bit;
-				g |= bit;
+				cm |= bit;
+				gm |= bit;
 			}
 
-			// -----------------------------------------
-			// 2) MASK SUR LE DERNIER WORD (padding)
-			// -----------------------------------------
-			if (w == longs - 1)
+			if (cm != gm)
 			{
-				int leftovers = portalCount & 31;
-				if (leftovers)
-				{
-					uint32_t mask = (1u << leftovers) - 1u;
-					c &= mask;
-					g &= mask;
-				}
-			}
-
-			// -----------------------------------------
-			// 3) COMPARAISON STRICTE
-			// -----------------------------------------
-			if (c != g)
-			{
+				Msg("[TryGPU] MISMATCH portal %d word %d : CPU=%08x GPU=%08x\n",
+					p, w, cm, gm);
 				mismatches++;
-
-				if (g_bDebugMode)
-				{
-					Warning(
-						"[TryGPU] WORD mismatch portal=%d word=%d CPU=%08X GPU=%08X\n",
-						p, w, c, g
-					);
-				}
 			}
 		}
-
-		// -----------------------------------------
-		// 4) MATCH STATUT CPU (sécurité)
-		// -----------------------------------------
-		P->status = stat_done;
 	}
 
 	if (mismatches == 0)
-	{
-		Msg("[TryGPU] PERFECT MATCH — GPU identical to CPU for ALL %d portals.\n",
-			portalCount);
-	}
+		Msg("[TryGPU] PERFECT MATCH - GPU identical to CPU.\n");
 	else
-	{
-		Warning("[TryGPU] %d mismatches found — CPU results will be preferred.\n",
-			mismatches);
-	}
+		Msg("[TryGPU] %d mismatches detected.\n", mismatches);
 }
 
 
-<<<<<<< Updated upstream
-void PortalFlow_FullGPU()
-{
-	Msg("[GPU-VIS] FULL GPU Flood fill starting...\n");
-
-	const int portalCount = g_gpuPF.portalCount;
-	const int longs = g_gpuPF.portalLongs;
-
-	cl_int err = 0;
-
-	while (true)
-	{
-		int curCountCPU = 0;
-
-		clEnqueueReadBuffer(
-			g_gpuPF.queue,
-			g_gpuFF.d_stateCount,
-			CL_TRUE,
-			0,
-			sizeof(int),
-			&curCountCPU,
-			0, nullptr, nullptr
-		);
-
-		if (g_bDebugMode)
-			Msg("[GPU-VIS] Iteration: active states = %d\n", curCountCPU);
-
-		if (curCountCPU == 0)
-			break;
-
-		int zero = 0;
-		clEnqueueWriteBuffer(
-			g_gpuPF.queue,
-			g_gpuFF.d_stateNextCount,
-			CL_TRUE,
-			0,
-			sizeof(int),
-			&zero,
-			0, nullptr, nullptr
-		);
-
-		clFinish(g_gpuPF.queue);
-
-		size_t gsz = curCountCPU;
-
-		err = clSetKernelArg(g_gpuPF.k_expand, 0, sizeof(cl_mem), &g_gpuPF.d_origins);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 1, sizeof(cl_mem), &g_gpuPF.d_radius);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 2, sizeof(cl_mem), &g_gpuPF.d_planes);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 3, sizeof(cl_mem), &g_gpuPF.d_portalVis);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 4, sizeof(cl_mem), &g_gpuFF.d_mightSee);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 5, sizeof(cl_mem), &g_gpuFF.d_stateCur);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 6, sizeof(cl_mem), &g_gpuFF.d_stateNext);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 7, sizeof(cl_mem), &g_gpuFF.d_stateCount);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 8, sizeof(cl_mem), &g_gpuFF.d_stateNextCount);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 9, sizeof(cl_mem), &g_gpuPF.d_leafPortalCount);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 10, sizeof(cl_mem), &g_gpuPF.d_leafPortalList);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 11, sizeof(int), &longs);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 12, sizeof(int), &portalCount);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 13, sizeof(int), &g_gpuPF.maxPerLeaf);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 14, sizeof(cl_mem), &g_gpuPF.d_portalLeaf);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 15, sizeof(cl_mem), &g_gpuPF.d_windPool);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 16, sizeof(cl_mem), &g_gpuPF.d_windPoolCount);
-
-		err |= clSetKernelArg(g_gpuPF.k_expand, 17, sizeof(cl_mem), &g_gpuPF.d_initSrcOffset);
-		err |= clSetKernelArg(g_gpuPF.k_expand, 18, sizeof(cl_mem), &g_gpuPF.d_initSrcCount);
-
-		if (err != CL_SUCCESS)
-		{
-			Warning("[GPU-VIS] Failed to set kernel args (err=%d)\n", err);
-			return;
-		}
-
-		err = clEnqueueNDRangeKernel(
-			g_gpuPF.queue,
-			g_gpuPF.k_expand,
-			1,
-			nullptr,
-			&gsz,
-			nullptr,
-			0, nullptr, nullptr
-		);
-
-		if (err != CL_SUCCESS)
-		{
-			Warning("[GPU-VIS] Kernel launch FAILED (portalFlowExpand), err=%d\n", err);
-			return;
-		}
-
-		clFinish(g_gpuPF.queue);
-
-		int nextCountCPU = 0;
-		clEnqueueReadBuffer(
-			g_gpuPF.queue,
-			g_gpuFF.d_stateNextCount,
-			CL_TRUE,
-			0,
-			sizeof(int),
-			&nextCountCPU,
-			0, nullptr, nullptr
-		);
-
-		std::swap(g_gpuFF.d_stateCur, g_gpuFF.d_stateNext);
-		std::swap(g_gpuFF.d_stateCount, g_gpuFF.d_stateNextCount);
-	}
-
-	Msg("[GPU-VIS] GPU Full Flow completed.\n");
-
-	// ==========================================================
-	// WRITEBACK CPU
-	// ==========================================================
-	for (int p = 0; p < portalCount; p++)
-	{
-		int* dst = (int*)sorted_portals[p]->portalvis;
-		size_t off = p * longs * sizeof(int);
-
-		clEnqueueReadBuffer(
-			g_gpuPF.queue,
-			g_gpuPF.d_portalVis,
-			CL_TRUE,
-			off,
-			longs * sizeof(int),
-			dst,
-			0, nullptr, nullptr
-		);
-
-		int byte = p >> 5;
-		int bit = 1 << (p & 31);
-		dst[byte] |= bit;
-
-		int leftovers = portalCount & 31;
-		if (leftovers)
-		{
-			uint32_t mask = (1u << leftovers) - 1u;
-			dst[longs - 1] &= mask;
-		}
-
-		sorted_portals[p]->nummightsee =
-			CountBits(sorted_portals[p]->portalvis, portalCount);
-
-		sorted_portals[p]->status = stat_done;
-	}
-
-	clFinish(g_gpuPF.queue);
-
-	Msg("[GPU-VIS] Writeback from GPU completed.\n");
-
-	// ==========================================================
-	// TRYGPU MODE (COPIE GPU → portalvisGPU)
-	// ==========================================================
-	if (g_bTryGPU)
-	{
-		for (int p = 0; p < portalCount; p++)
-		{
-			byte* out = sorted_portals[p]->portalvisGPU;
-			if (!out) continue;
-
-			int* dst = (int*)out;
-
-			size_t off = p * longs * sizeof(int);
-			clEnqueueReadBuffer(
-				g_gpuPF.queue,
-				g_gpuPF.d_portalVis,
-				CL_TRUE,
-				off,
-				longs * sizeof(int),
-				dst,
-				0, nullptr, nullptr
-			);
-		}
-
-		clFinish(g_gpuPF.queue);
-
-		GPU_CPU_SampleCompare();
-	}
-
-	Msg("[GPU-VIS] FULL GPU PortalFlow done.\n");
-}
-
-
-
-
-=======
 void RunKernel_WorldOcclusion()
 {
 	if (!g_gpuPF.k_ultraWorldOcc) return;
@@ -2745,7 +2516,6 @@ void BuildPortalOrderByMightSee()
 		});
 }
 
->>>>>>> Stashed changes
 void PortalFlow_CPU(int iThread, int portalnum)
 {
 	threaddata_t	data;
@@ -2920,34 +2690,6 @@ void BasePortalVis(int iThread, int portalnum)
 	c_flood += p->nummightsee;
 }
 
-void BuildFlatLeafPortalArrays(
-	std::vector<int>& outCount,
-	std::vector<int>& outList)
-{
-	int numLeaves = g_leafPortals.size();
-	outCount.resize(numLeaves);
-	outList.resize(numLeaves * g_maxPerLeaf);
-
-	for (int leaf = 0; leaf < numLeaves; leaf++)
-	{
-		const auto& vec = g_leafPortals[leaf];
-		int count = vec.size();
-
-		if (count > g_maxPerLeaf)
-			count = g_maxPerLeaf;
-
-		outCount[leaf] = count;
-
-		for (int i = 0; i < count; i++)
-			outList[leaf * g_maxPerLeaf + i] = vec[i];
-
-		for (int i = count; i < g_maxPerLeaf; i++)
-			outList[leaf * g_maxPerLeaf + i] = -1;
-	}
-
-	Msg("[GPU-VIS] Flattened leaf->portal adjacency uploaded.\n");
-}
-
 
 
 void BuildLeafPortalTable()
@@ -2959,10 +2701,12 @@ void BuildLeafPortalTable()
 
 	int portalCount = g_numportals * 2;
 
+	// -------------------------------------------
+	// Construire un mapping rawIndex -> sortedIndex
+	// -------------------------------------------
 	static std::vector<int> rawToSorted;
 	rawToSorted.resize(portalCount);
 
-	// Map raw index -> sorted index
 	for (int s = 0; s < portalCount; s++)
 	{
 		portal_t* P = sorted_portals[s];
@@ -2970,7 +2714,10 @@ void BuildLeafPortalTable()
 		rawToSorted[rawIdx] = s;
 	}
 
-	// Fill adjacency lists with sorted portal indexes
+	// -------------------------------------------
+	// Ajouter chaque portail dans la liste de son leaf
+	// mais en utilisant l’index TRIÉ
+	// -------------------------------------------
 	for (int raw = 0; raw < portalCount; raw++)
 	{
 		portal_t* P = portals + raw;
@@ -2983,12 +2730,37 @@ void BuildLeafPortalTable()
 		g_leafPortals[leaf].push_back(sortedIdx);
 	}
 
-	Msg("[GPU-VIS] Built leaf->portal adjacency table (%d leaves).\n",
-		numLeaves);
+	Msg("[GPU-VIS] Built leaf->portal adjacency table (sorted indices, %d leaves)\n", numLeaves);
 }
-
 
 // ======================================================================
 // Flatten leafPortal adjacency table for GPU upload
 // ======================================================================
 
+void BuildFlatLeafPortalArrays(std::vector<int>& outCount,
+	std::vector<int>& outList)
+{
+	int numLeaves = g_leafPortals.size();
+	outCount.resize(numLeaves);
+	outList.resize(numLeaves * g_maxPerLeaf);
+
+	for (int leaf = 0; leaf < numLeaves; leaf++)
+	{
+		const auto& vec = g_leafPortals[leaf];
+		int count = vec.size();
+		if (count > g_maxPerLeaf)
+			count = g_maxPerLeaf;
+
+		outCount[leaf] = count;
+
+		// Copier les portails triés
+		for (int i = 0; i < count; i++)
+			outList[leaf * g_maxPerLeaf + i] = vec[i];
+
+		// Padding à -1
+		for (int i = count; i < g_maxPerLeaf; i++)
+			outList[leaf * g_maxPerLeaf + i] = -1;
+	}
+
+	Msg("[GPU-VIS] Flattened adjacency (leaf -> portal sorted) uploaded to GPU.\n");
+}

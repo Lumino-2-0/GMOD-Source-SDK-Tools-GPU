@@ -1,4 +1,4 @@
-﻿#include "cmdlib.h"
+#include "cmdlib.h"
 #include "mathlib/mathlib.h"
 #include "bsplib.h"
 
@@ -44,12 +44,9 @@ struct portal_t {
     byte* portalflood;  // [portals], intermediaire
     byte* portalvis;    // [portals], final
     int nummightsee;    // bit-count de portalflood pour tri
-<<<<<<< Updated upstream
-=======
 	byte* portalvis_cpu; // [portals], final CPU
 	byte* portalvisGPU; // [portals], final GPU
     byte* portalHybridMask;
->>>>>>> Stashed changes
 };
 
 struct leaf_t {

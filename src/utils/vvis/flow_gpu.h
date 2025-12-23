@@ -13,10 +13,6 @@
 // ============================================================================
 // TYPES GPU SÉCURISÉS (pas de float3 OpenCL natif côté host)
 // ============================================================================
-<<<<<<< Updated upstream
-typedef struct { float x, y, z; } float3;
-typedef struct { float x, y, z, w; } float4;
-=======
 #pragma pack(push,1)
 struct float2 { float x, y; };
 #pragma pack(pop)
@@ -208,7 +204,6 @@ struct RayHitGPU
     float pad1;
 };
 
->>>>>>> Stashed changes
 
 // ============================================================================
 // GPUFlowState - ÉTAT COMPLET DE CHAQUE PORTAL DURANT LE BFS
@@ -216,16 +211,19 @@ struct RayHitGPU
 // ============================================================================
 typedef struct
 {
-    int leaf;
-    int portal;
-    int mightOffset;
-    int firstPass;
+    int portal;        // portail courant (P)
+    int leaf;          // leaf courant
+    int mightOffset;   // offset dans d_mightSee (longs * P)
+    int firstPass;     // 1 = CPU skip separators
 
-    int srcOffset;
+    // SOURCE
+    int srcOffset;     // offset dans le pool global
     int srcCount;
 
-    int passOffset;
+    // PASS
+    int passOffset;    // offset dans le pool global (ou -1)
     int passCount;
+
 } GPUFlowState;
 
 // ============================================================================
@@ -233,12 +231,13 @@ typedef struct
 // ============================================================================
 struct GPUFlowFixed
 {
-    cl_mem d_stateCur = nullptr;       // array<GPUFlowState>
-    cl_mem d_stateNext = nullptr;      // array<GPUFlowState>
-    cl_mem d_stateCount = nullptr;     // int
-    cl_mem d_stateNextCount = nullptr; // int
+    cl_mem d_stateCur;
+    cl_mem d_stateNext;
+    cl_mem d_stateCount;
+    cl_mem d_stateNextCount;
+    cl_mem d_mightSee;
 
-    cl_mem d_mightSee = nullptr;       // mightSee[] (same as CPU)
+    int startPortal;
 };
 extern GPUFlowFixed g_gpuFF;
 
@@ -263,12 +262,6 @@ struct GPUPortalFlowCLContext
     cl_kernel k_hybridFilter = nullptr;
 	cl_kernel k_separatorReject = nullptr;
 
-    // Ces kernels ne sont plus utilisés dans ton pipeline,
-    // MAIS on les déclare pour compatibilité avec ton InitOpenCL :
-    cl_kernel k_gpuClipWinding = nullptr;  // BLOC 3
-    cl_kernel k_gpuGenerateSep = nullptr;  // BLOC 4
-    cl_kernel k_gpuClipToSep = nullptr;  // BLOC 5
-
     // =============================================
     // STATIC PORTAL BUFFERS
     // =============================================
@@ -278,13 +271,10 @@ struct GPUPortalFlowCLContext
     cl_mem d_planes = nullptr;
     cl_mem d_winding4 = nullptr;
     cl_mem d_portalLeaf = nullptr;
-<<<<<<< Updated upstream
-=======
     cl_mem d_portalArea = nullptr;   // NEW: portal -> area index
     cl_mem d_leafArea; // leaf -> area
 	cl_mem d_portalCenters = nullptr;
     cl_mem d_portalNormals = nullptr;
->>>>>>> Stashed changes
 
     // =============================================
     // LEAF ADJACENCY
@@ -299,8 +289,6 @@ struct GPUPortalFlowCLContext
 
     bool initialized = false;
 
-<<<<<<< Updated upstream
-=======
     cl_mem d_ultraMask = nullptr;
     cl_mem d_ultraMaskTemp = nullptr;
 
@@ -344,7 +332,6 @@ struct GPUPortalFlowCLContext
 
     cl_mem d_ultraRejectMask = nullptr;
 
->>>>>>> Stashed changes
     // =============================================
     // GLOBAL WINDING POOL + OFFSETS
     // =============================================
@@ -357,6 +344,9 @@ struct GPUPortalFlowCLContext
 
 
 extern GPUPortalFlowCLContext g_gpuPF;
+
+
+
 
 // ============================================================================
 // INTERFACES PUBLIQUES
@@ -371,12 +361,6 @@ void GPU_CPU_SampleCompare();
 void BuildPortalOrderByMightSee();
 void PortalFlow_CPU_Ordered(int iThread, int workIndex);
 
-<<<<<<< Updated upstream
-// ============================================================================
-// KERNELS SOURCE (définis dans flow_gpu_kernels.cpp ou bloc intégré)
-// ============================================================================
-extern const char* g_gpuPortalFlowKernels;
-=======
 // Ultra preset kernels + calls
 // void PortalFlow_ULTRA_GPU(); NE DOIT PLUS ETRE APPELÉ
 void RunKernel_LeafAABBOcclusion();
@@ -397,25 +381,23 @@ void ApplyLeafHybridToPortals();
 
 // CPU side
 void ApplyHybridMightSeeToCPU();
->>>>>>> Stashed changes
 
 
+enum SDFType : int
+{
+    SDF_SPHERE = 0,
+    SDF_BOX = 1,
+    SDF_CAPSULE = 2
+};
 
 
 static const char* g_gpuPortalFlowKernels = R"CLC(
+// ============================================================================
+// VVIS_GPU — KERNEL OPENCL FINAL 100% FIXÉ & MIRROR CPU
+// ============================================================================
 
-<<<<<<< Updated upstream
-#define MAX_WINDING_POINTS 128
-#define EPS_PLANE 1e-5f
-#define EPS_CLIP  1e-5f
-#define EPS_WIND  1e-6f
-#define EPS_DOT   1e-6f
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
 
-// =============================================================
-// STRUCT CPU <-> GPU IDENTIQUE
-// =============================================================
-typedef struct {
-=======
 #define MAX_WINDING_POINTS 256
 #define ON_EPSILON         0.01f
 #define EPS_CLIP           0.01f
@@ -461,34 +443,64 @@ typedef struct {
 // =========================
 typedef struct {
     int portal;
->>>>>>> Stashed changes
     int leaf;
-    int portal;
     int mightOffset;
     int firstPass;
+
     int srcOffset;
     int srcCount;
+
     int passOffset;
     int passCount;
 } GPUFlowState;
 
-// =============================================================
-// MATH UTILS
-// =============================================================
-inline float dot3(float3 a, float3 b) {
-    return a.x*b.x + a.y*b.y + a.z*b.z;
-}
 
-inline float3 sub3(float3 a, float3 b) {
-    return (float3)(a.x-b.x, a.y-b.y, a.z-b.z);
-}
-
-inline float3 mul3(float3 a, float s) {
-    return (float3)(a.x*s, a.y*s, a.z*s);
-}
-
-inline float3 cross3(float3 a, float3 b)
+// ==========================================================
+// SAFE ACCESSORS FOR float3 (OpenCL prohibits &v.x indexing)
+// ==========================================================
+inline float get3(float3 v, int axis)
 {
+    return (axis == 0 ? v.x : (axis == 1 ? v.y : v.z));
+}
+
+// same but for BVH nodes
+inline float getAABBMin(BVHNodeGPU n, int axis)
+{
+    return (axis == 0 ? n.aabbMin.x : (axis == 1 ? n.aabbMin.y : n.aabbMin.z));
+}
+
+inline float getAABBMax(BVHNodeGPU n, int axis)
+{
+    return (axis == 0 ? n.aabbMax.x : (axis == 1 ? n.aabbMax.y : n.aabbMax.z));
+}
+
+// ============================================================================
+// LEAF AABB — GPU representation (MIRROR C++)
+// ============================================================================
+typedef struct
+{
+    float3 mins;
+    float3 maxs;
+} LeafAABBGPU;
+// Leaf-level visibility mask
+// 1 bit = leaf visible
+
+typedef struct {
+    float3 origin;
+    float aperture;
+    float3 dir;
+    float pad;
+} ConeSet;
+
+// ============================================================================
+//  float3 HELPERS — OpenCL native, 3 composants stricts
+// ============================================================================
+
+inline float dot3s(float3 a, float3 b) {
+    return dot(a,b);
+}
+
+inline float3 cross3s(float3 a, float3 b) {
     return (float3)(
         a.y*b.z - a.z*b.y,
         a.z*b.x - a.x*b.z,
@@ -496,12 +508,6 @@ inline float3 cross3(float3 a, float3 b)
     );
 }
 
-<<<<<<< Updated upstream
-// =============================================================
-// POOL ALLOCATION : renvoie base index pour un winding
-// =============================================================
-inline int allocW(__global int* poolCount)
-=======
 inline float3 add3s(float3 a, float3 b) {
     return (float3)(a.x+b.x, a.y+b.y, a.z+b.z);
 }
@@ -530,49 +536,62 @@ inline GPUWinding ClipWindingEpsilon_CPU(
     float3 normal,
     float  dist,
     int* ok)
->>>>>>> Stashed changes
 {
-    return atomic_add(poolCount, MAX_WINDING_POINTS);
-}
+    GPUWinding front;
+    front.numpoints = 0;
 
-// =============================================================
-// CHOP (CPU ChopWinding répliqué exactement ordre FP32)
-// =============================================================
-inline int chopExact(
-    float3* outPts,
-    const float3* inPts,
-    int inCount,
-    float3 N,
-    float  D
-){
-    int o = 0;
+    int sides[MAX_WINDING_POINTS+4];
+    float dists[MAX_WINDING_POINTS+4];
+    int counts[3] = {0,0,0};
 
-    for (int i = 0; i < inCount; i++)
+    // --- CLASSIFY ---
+    for (int i=0; i<inW.numpoints; i++)
     {
-        int ni = (i + 1) % inCount;
+        float d = dot3s(inW.points[i], normal) - dist;
+        dists[i] = d;
 
-        float3 P1 = inPts[i];
-        float3 P2 = inPts[ni];
+        if (d > ON_EPSILON)      { sides[i] =  1; counts[1]++; }
+        else if (d < -ON_EPSILON){ sides[i] = -1; counts[2]++; }
+        else                     { sides[i] =  0; counts[0]++; }
+    }
 
-        float d1 = dot3(P1, N) - D;
-        float d2 = dot3(P2, N) - D;
+    sides[inW.numpoints] = sides[0];
+    dists[inW.numpoints] = dists[0];
 
-        if (d1 >= -EPS_CLIP) {
-            outPts[o++] = P1;
-        }
+    // --- fully back ---
+    if (counts[1] == 0) {
+        *ok = 0;
+        front.numpoints = 0;
+        return front;
+    }
 
-        int diff = (d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0);
-        if (diff)
+    // --- fully front ---
+    if (counts[2] == 0) {
+        *ok = 1;
+        return inW;
+    }
+
+    // --- partial split ---
+    int newCount = 0;
+
+    for (int i=0; i<inW.numpoints; i++)
+    {
+        int ni = (i+1) % inW.numpoints;
+        float3 p1 = inW.points[i];
+        float3 p2 = inW.points[ni];
+
+        int s1 = sides[i];
+        int s2 = sides[ni];
+
+        float d1 = dists[i];
+        float d2 = dists[ni];
+
+        if (s1 >= 0)
+            front.points[newCount++] = p1;
+
+        if ((s1==1 && s2==-1) || (s1==-1 && s2==1))
         {
             float t = d1 / (d1 - d2);
-<<<<<<< Updated upstream
-            float3 mid = (float3)(
-                P1.x + t*(P2.x - P1.x),
-                P1.y + t*(P2.y - P1.y),
-                P1.z + t*(P2.z - P1.z)
-            );
-            outPts[o++] = mid;
-=======
             float3 mid;
 
             // CPU HACK EXACT — COMPOSANTS INDIVIDUELS
@@ -604,88 +623,118 @@ inline int chopExact(
                 GPUWinding empty; empty.numpoints = 0;
                 return empty;
             }
->>>>>>> Stashed changes
         }
     }
 
-    return o;
+    front.numpoints = newCount;
+    *ok = (newCount > 0);
+    return front;
 }
 
-// =============================================================
-// CPU ClipToSeparators – VERSION B – 100% logique CPU
-// =============================================================
-inline int clipToSeparatorsExact(
-    __global float3* pool,
-    __global int*    poolCount,
+// ============================================================================
+//    ChopWinding_CPU wrapper
+// ============================================================================
+inline GPUWinding ChopWinding_CPU(
+    GPUWinding inW,
+    float3 normal,
+    float  dist,
+    int* ok)
+{
+    return ClipWindingEpsilon_CPU(inW, normal, dist, ok);
+}
 
-    const float3* source,
-    int srcCount,
-    const float3* pass,
-    int passCount,
-    const float3* target,
-    int tgtCount
-){
-    float3 A[MAX_WINDING_POINTS];
-    float3 B[MAX_WINDING_POINTS];
+// ============================================================================
+//    ClipToSeparators_CPU — FULL CPU MIRROR
+// ============================================================================
 
-    // init target -> A
-    for (int i = 0; i < tgtCount; i++)
-        A[i] = target[i];
+inline GPUWinding ClipToSeparators_CPU(
+    GPUWinding source,
+    GPUWinding pass,
+    GPUWinding target,
+    int flipclip,
+    int* ok)
+{
+    *ok = 1;
+    GPUWinding cur = target;
 
-    int aCount = tgtCount;
-
-    // === CPU nested loops ===
-    for (int i = 0; i < srcCount; i++)
+    for (int i=0; i<source.numpoints; i++)
     {
-        int ni = (i + 1) % srcCount;
-        float3 E = sub3(source[ni], source[i]);
+        int l = (i+1) % source.numpoints;
+        float3 v1 = sub3s(source.points[l], source.points[i]);
 
-        for (int j = 0; j < passCount; j++)
+        for (int j=0; j<pass.numpoints; j++)
         {
-            float3 V = sub3(pass[j], source[i]);
-            float3 N = cross3(E, V);
+            float3 v2 = sub3s(pass.points[j], source.points[i]);
+            float3 N  = cross3s(v1, v2);
+            float len2 = dot3s(N,N);
 
-            float len2 = dot3(N, N);
-            if (len2 < EPS_WIND)
+            if (len2 < ON_EPSILON)
                 continue;
 
-            float inv = 1.0f / sqrt(len2);
-            N = mul3(N, inv);
+            N = mul3s(N, native_rsqrt(len2));
+            float D = dot3s(pass.points[j], N);
 
-            float D = dot3(pass[j], N);
+            int fliptest = -1;
 
-            // === EXACT CPU CLIP ===
-            int o = chopExact(B, A, aCount, N, D);
-            if (o == 0)
-                return 0;
+            for (int k=0; k<source.numpoints; k++)
+            {
+                if (k==i || k==l) continue;
 
-            // copy back
-            for (int k = 0; k < o; k++)
-                A[k] = B[k];
-            aCount = o;
+                float d = dot3s(source.points[k],N) - D;
+
+                if (d < -ON_EPSILON) { fliptest = 0; break; }
+                if (d >  ON_EPSILON) { fliptest = 1; break; }
+            }
+
+            if (fliptest == -1) continue;
+
+            if (fliptest == 1)
+            {
+                N = -N;
+                D = -D;
+            }
+
+            int valid = 1, pos = 0;
+            for (int k=0; k<pass.numpoints; k++)
+            {
+                if (k==j) continue;
+                float d = dot3s(pass.points[k], N) - D;
+
+                if (d < -ON_EPSILON) { valid = 0; break; }
+                if (d >  ON_EPSILON) pos++;
+            }
+
+            if (!valid) continue;
+            if (pos==0) continue;
+
+            if (flipclip)
+            {
+                N = -N;
+                D = -D;
+            }
+
+            int okClip = 0;
+            GPUWinding c = ChopWinding_CPU(cur, N, D, &okClip);
+
+            if (!okClip || c.numpoints==0)
+            {
+                *ok = 0;
+                GPUWinding empty; empty.numpoints=0;
+                return empty;
+            }
+
+            cur = c;
         }
     }
 
-    // === allocate pool ===
-    int base = allocW(poolCount);
-    for (int i = 0; i < aCount; i++)
-        pool[base+i] = A[i];
-
-    return aCount;
+    return cur;
 }
 )CLC"
 
-<<<<<<< Updated upstream
-// =============================================================
-// KERNEL PRINCIPAL : portalFlowExpand
-// =============================================================
-__kernel void portalFlowExpand(
-=======
 /*
 	HERE GOES TO THE RAY VS TRIANGLE + BVH INTERSECTION CODE + MAIN PortalFlowExpand KERNEL !
 */
 
->>>>>>> Stashed changes
 
 R"CLC(
 
@@ -717,92 +766,6 @@ inline int RayTriangleIntersect(
     if (u < 0.0f || u > 1.0f)
         return 0;
 
-<<<<<<< Updated upstream
-    // POOL
-    __global float3* pool,
-    __global int*    poolCount,
-
-    // SRC INIT
-    __global const int* initSrcOffset,
-    __global const int* initSrcCount
-){
-    int idx = get_global_id(0);
-    int active = *curCount;
-    if (idx >= active) return;
-
-    GPUFlowState st = cur[idx];
-    int P = st.portal;
-    int leaf = st.leaf;
-
-    int base = st.mightOffset;
-
-    // params of P
-    float3 oP = origins[P];
-    float4 plP = planes[P];
-    float3 NP = (float3)(plP.x, plP.y, plP.z);
-    float DP = plP.w;
-
-    int num = leafPortalCount[leaf];
-
-    for (int k = 0; k < num; k++)
-    {
-        int Q = leafPortalList[leaf*maxPerLeaf + k];
-        if (Q < 0) continue;
-
-        int byte = Q >> 5;
-        int bit  = 1 << (Q & 31);
-
-        if ((mightSee[base + byte] & bit) == 0)
-            continue;
-
-        int old = visMask[base + byte];
-        if (old & bit)
-            continue;
-
-        // radius test
-        float3 oQ = origins[Q];
-        float3 dv = sub3(oQ, oP);
-        float d2 = dot3(dv, dv);
-        float rr = radius[P] + radius[Q];
-        if (d2 > rr*rr)
-            continue;
-
-        // plane tests
-        float side1 = dot3(oQ, NP) - DP;
-        if (side1 <= -radius[Q])
-            continue;
-
-        float4 plQ = planes[Q];
-        float3 NQ = (float3)(plQ.x, plQ.y, plQ.z);
-        float DQ = plQ.w;
-
-        float side2 = dot3(oP, NQ) - DQ;
-        if (side2 <= -radius[P])
-            continue;
-
-        // =====================================================
-        // FIRST PASS (CPU rule: skip separator clipping)
-        // =====================================================
-        if (st.firstPass == 1)
-        {
-            visMask[base + byte] = old | bit;
-
-            int out = atomic_add(nextCount, 1);
-            if (out < portalCount)
-            {
-                next[out].portal = Q;
-                next[out].leaf   = portalLeaf[Q];
-
-                next[out].mightOffset = Q * longs;
-                next[out].firstPass   = 0;
-
-                next[out].srcOffset = initSrcOffset[P];
-                next[out].srcCount  = initSrcCount[P];
-
-                next[out].passOffset = -1;
-                next[out].passCount  = 0;
-            }
-=======
     float3 q = cross(s, e1);
     float v = dot(rd, q) * invDet;
     if (v < 0.0f || u + v > 1.0f)
@@ -876,55 +839,8 @@ inline int RayBlockedBVH_Internal(
     {
         int n = stack[--sp];
         if (n < 0 || n >= bvhCount)
->>>>>>> Stashed changes
             continue;
 
-<<<<<<< Updated upstream
-        // =====================================================
-        // FULL CLIP-TO-SEPARATORS (VERSION B)
-        // =====================================================
-        const float3* src  = pool + st.srcOffset;
-        int srcCnt = st.srcCount;
-
-        const float3* pass = (st.passOffset >= 0 ? pool + st.passOffset : src);
-        int passCnt = (st.passOffset >= 0 ? st.passCount : srcCnt);
-
-        int tgtOff = initSrcOffset[Q];
-        int tgtCnt = initSrcCount[Q];
-        const float3* tgt = pool + tgtOff;
-
-        int newCount = clipToSeparatorsExact(
-            pool,
-            poolCount,
-            src,  srcCnt,
-            pass, passCnt,
-            tgt,  tgtCnt
-        );
-
-        if (newCount == 0)
-            continue;
-
-        // mark visible
-        visMask[base + byte] = old | bit;
-
-        // push next BFS node
-        int out = atomic_add(nextCount, 1);
-        if (out < portalCount)
-        {
-            next[out].portal = Q;
-            next[out].leaf   = portalLeaf[Q];
-
-            next[out].mightOffset = Q * longs;
-            next[out].firstPass   = 0;
-
-            // keep same source
-            next[out].srcOffset = st.srcOffset;
-            next[out].srcCount  = st.srcCount;
-
-            int newOffset = (*poolCount) - MAX_WINDING_POINTS;
-            next[out].passOffset = newOffset;
-            next[out].passCount  = newCount;
-=======
         BVHNodeGPU node = bvhNodes[n];
 
         if (!RayAABB(ro, invDir, node.aabbMin, node.aabbMax, dist))
@@ -1048,14 +964,10 @@ __kernel void ultra_worldOcclusion(
                 ultraRejectMask[base + word] |= bit;
                 break;
             }
->>>>>>> Stashed changes
         }
     }
 }
 
-<<<<<<< Updated upstream
-)CLC";
-=======
 
 
 // =======================================================
@@ -1505,4 +1417,3 @@ __kernel void SeparatorReject_MultiRay(
 
 
 )CLC";
->>>>>>> Stashed changes

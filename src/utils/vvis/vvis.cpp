@@ -293,8 +293,6 @@ void CalcPortalVis()
 		return;
 	}
 
-<<<<<<< Updated upstream
-=======
 	// ============================================================
 	// 0.5 - FORCE CPU
 	// ============================================================
@@ -308,7 +306,6 @@ void CalcPortalVis()
 		return;
 	}
 
->>>>>>> Stashed changes
 	// ============================================================
 	// 1 - INIT GPU
 	// ============================================================
@@ -1099,19 +1096,8 @@ void PrintUsage( int argc, char **argv )
 		"  -PresetGPU      : Choisit l'agressivite de l'optimisation GPU.\n"
 		"       0 = Soft (quasi-identique VVIS original)\n"
 		"       1 = Normal\n"
-<<<<<<< Updated upstream
-		"       2 = Aggressive (defaut)\n"
-		"       3 = Ultra (pour tres grandes maps ouvertes)\n"
-		"  -NoCheckLib    : Desactive la verification des bibliotheques fournis avec la version moddé (tier0; vstdlib;  filesystem_stdio) au demarrage (utile pour les tests de developpement).\n"
-		"\n"
-#if 1 // Disabled for the initial SDK release with VMPI so we can get feedback from selected users.
-		);
-#else
-		"  -mpi_ListParams : Show a list of VMPI parameters.\n"
-=======
 		"       2 = Aggressive (Area occlusion)\n"
 		"       3 = Ultra (pour tres grandes maps/complexes)\n"
->>>>>>> Stashed changes
 		"\n"
 		);
 }
