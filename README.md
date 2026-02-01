@@ -1,20 +1,11 @@
-# Source SDK 2013 — GMOD Tools X64 Mod
+# Source SDK 2013 - GMOD Tools X64 Mod
 
-# DO NOT USE YET — CPU BASELINE REBUILD IN PROGRESS
+# DO NOT USE YET
 
 ---
 
-##  Project Status — IMPORTANT
+##  Project Status - IMPORTANT
 
-This project is currently undergoing a **full reset of the VVIS tool**.
-
-After extensive experimentation, it became clear that:
-- The **CPU VVIS baseline must be 100% identical to Valve’s original behavior**
-- Any GPU or OpenCL optimization **must be layered strictly on top of a verified CPU reference**
-- Even small deviations in PortalFlow, cluster merge, or compression logic can produce **incorrect PVS results**
-
-**As of now, GPU acceleration is TEMPORARILY DISABLED**  
-**VVIS is being rebuilt from a clean, Valve-faithful baseline**
 
 **Do NOT use this repository for production maps at this time.**
 
@@ -22,7 +13,7 @@ After extensive experimentation, it became clear that:
 
 ## Project Summary
 
-Source code for **Source SDK 2013 (Garry’s Mod, 64-bit)** — custom experimental build tools for:
+Source code for **Source SDK 2013 (Garry’s Mod, 64-bit)** - custom experimental build tools for:
 
 - **VBSP**
 - **VVIS**
@@ -56,7 +47,7 @@ However, practical experimentation revealed that:
 ---
 
 
-### GPU / OpenCL Work — ON HOLD
+### GPU / OpenCL Work - ON HOLD
 
 The OpenCL-based **VVIS_GPU** work is currently **paused**, not abandoned.
 
@@ -72,7 +63,7 @@ GPU work will resume only when:
 
 ---
 
-### VRAD — PLANNED IMPROVEMENTS
+### VRAD - PLANNED IMPROVEMENTS
 
 Future work on **VRAD** may include:
 - Improved verbose logging (separate log files)
@@ -167,13 +158,13 @@ PathToYourClone\bin\vvis_GPU.exe -game "PathToGarrysMod\garrysmod" "PathToMap\ma
 
 ## References & Resources
 
-- Valve Developer Wiki — Source SDK 2013  
+- Valve Developer Wiki - Source SDK 2013  
   https://developer.valvesoftware.com/wiki/Source_SDK_2013
 
-- Ficool2 — Source SDK 2013 fork  
+- Ficool2 - Source SDK 2013 fork  
   https://github.com/ficool2/source-sdk-2013
 
-- Ficool2 — VVIS++, VRAD++, Tools  
+- Ficool2 - VVIS++, VRAD++, Tools  
   https://ficool2.github.io/HammerPlusPlus-Website/tools.html
 
 - OpenCL Specification  
