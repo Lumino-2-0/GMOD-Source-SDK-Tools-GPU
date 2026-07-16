@@ -1,13 +1,12 @@
 # Source SDK 2013 - GMOD Tools X64 Mod
 
-# DO NOT USE YET
+# DO NOT USE
 
 ---
 
 ##  Project Status - IMPORTANT
 
-
-**Do NOT use this repository for production maps at this time.**
+***After thinking about this project, I'm going to start over and go back to a CUDA base with a STABLE plan. I'll leave this repo open for those curious about the beginnings of the work, but there's little chance I'll finish the version with OpenCL. For now, I'm focusing on my studies, my GMOD map, and the other small projects on my git that need to be finished. Thanks for your patience and understanding :)***
 
 ---
 
