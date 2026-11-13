@@ -1,6 +1,6 @@
-# Source SDK 2013 - GMOD Tools GPU (CUDA)
+# Source SDK 2013 - GMOD Tools GPU (CUDA+OpenCL)
 
-🇫🇷 [Version française](README_FR.md)
+FR [Version française](README_FR.md)
 
 VVIS and VRAD for Garry's Mod (64-bit), with part of the work moved to the GPU.
 
@@ -8,7 +8,7 @@ VVIS and VRAD for Garry's Mod (64-bit), with part of the work moved to the GPU.
 
 I said it in the old version: I was starting over on a **CUDA** base with a stable plan. Done.
 The old OpenCL direction is dropped as an architecture (OpenCL is only kept as a fallback for
-VVIS on AMD/Intel).
+VVIS on AMD/Intel GPU).
 
 It's still **experimental**. I use it on my own maps, but keep a backup of your `.bsp` files
 and check in game before publishing anything.
