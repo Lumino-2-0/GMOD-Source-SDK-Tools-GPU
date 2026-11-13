@@ -1,4 +1,4 @@
-# Source SDK 2013 - GMOD Tools GPU (CUDA)
+# Source SDK 2013 - GMOD Tools GPU (CUDA+OpenCL)
 
 EN [English version](README.md)
 
@@ -8,7 +8,7 @@ VVIS et VRAD pour Garry's Mod (64 bits), avec une partie du calcul envoyée sur 
 
 Je l'avais dit dans l'ancienne version : je repartais de zéro sur une base **CUDA**, avec un plan
 stable. C'est fait. L'ancienne piste OpenCL est abandonnée côté architecture (OpenCL reste là
-uniquement comme repli pour VVIS sur AMD/Intel).
+uniquement comme repli pour VVIS sur les GPU AMD/Intel).
 
 Ça reste **expérimental**. Je m'en sers sur mes propres cartes, mais garde une sauvegarde de
 tes `.bsp` et vérifie en jeu avant de publier quoi que ce soit.
