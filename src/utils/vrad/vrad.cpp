@@ -9,6 +9,7 @@
 // vrad.c
 
 #include "vrad.h"
+#include "vrad_gpu.h"
 #include "physdll.h"
 #include "lightmap.h"
 #include "tier1/strtools.h"
@@ -18,6 +19,7 @@
 #include "leaf_ambient_lighting.h"
 #include "tools_minidump.h"
 #include "loadcmdline.h"
+#include "tier0/icommandline.h"
 #include "byteswap.h"
 
 #define ALLOWDEBUGOPTIONS (0 || _DEBUG)
@@ -116,9 +118,11 @@ qboolean	g_bLogHashData = false;
 bool		g_bNoDetailLighting = false;
 double		g_flStartTime;
 bool		g_bStaticPropLighting = false;
-bool        g_bStaticPropPolys = false;
+static bool s_bNoIndirectGPU = false;
+bool        g_bStaticPropPolys = true;
 bool        g_bTextureShadows = false;
 bool        g_bDisablePropSelfShadowing = false;
+bool        g_bNoPropMark = false;
 
 
 CUtlVector<byte> g_FacesVisibleToLights;
@@ -1751,6 +1755,19 @@ int CountClusters( void )
 RadWorld
 =============
 */
+// Chrono par phase, toujours actif (cout negligeable).
+static double s_PhaseStart = 0.0;
+static void PhaseBegin()
+{
+	s_PhaseStart = Plat_FloatTime();
+}
+static void PhaseEnd( const char *pName )
+{
+	printf( "[PHASE] %-28s %8.2f s\n", pName, Plat_FloatTime() - s_PhaseStart );
+	fflush( stdout );
+	s_PhaseStart = Plat_FloatTime();
+}
+
 void RadWorld_Start()
 {
 	unsigned	i;
@@ -1922,6 +1939,7 @@ void BuildFacesVisibleToLights( bool bAllVisible )
 
 
 
+void VradProf_PrintTransfer();
 void MakeAllScales (void)
 {
 	// determine visibility between patches
@@ -2029,7 +2047,10 @@ bool RadWorld_Go()
 	else 
 #endif
 	{
+		PhaseBegin();
 		RunThreadsOnIndividual (numfaces, true, BuildFacelights);
+		PhaseEnd( "BuildFacelights" );
+		VradProf_PrintLights();
 	}
 
 	// Was the process interrupted?
@@ -2067,10 +2088,16 @@ bool RadWorld_Go()
 			addlight.SetSize( g_Patches.Size() );
 			memset( addlight.Base(), 0, g_Patches.Size() * sizeof( bumplights_t ) );
 
+			PhaseBegin();
 			MakeAllScales ();
+			PhaseEnd( "MakeAllScales (transfers)" );
+			VradProf_PrintTransfer();
+			if ( g_bUseCUDA )
+				VradGPU_PrintStats();
 
 			// spread light around
 			BounceLight ();
+			PhaseEnd( "BounceLight" );
 		}
 
 		//
@@ -2087,7 +2114,9 @@ bool RadWorld_Go()
 		if ( !g_bUseMPI || g_bMPIMaster )
 #endif
 		{
+			PhaseBegin();
 			RunThreadsOnIndividual (numfaces, true, FinalLightFace);
+			PhaseEnd( "FinalLightFace" );
 		}
 		
 		// Distribute the lighting data to workers.
@@ -2239,8 +2268,10 @@ void VRAD_LoadBSP( char const *pFilename )
 	ParseEntities ();
 	ExtractBrushEntityShadowCasters();
 
+	PhaseBegin();
 	StaticPropMgr()->Init();
 	StaticDispMgr()->Init();
+	PhaseEnd( "StaticProp/Disp Init" );
 
 	if (!visdatasize)
 	{
@@ -2289,11 +2320,16 @@ void VRAD_LoadBSP( char const *pFilename )
 	float end = Plat_FloatTime();
 	printf ( "Done (%.2f seconds)\n", end-start );
 
+	if ( g_bUseCUDA )
+		VradGPU_Init();
+
 #if 0  // To test only k-d build
 	exit(0);
 #endif
 
+	PhaseBegin();
 	RadWorld_Start();
+	PhaseEnd( "RadWorld_Start (patches/vis)" );
 
 	// Setup incremental lighting.
 	if( g_pIncremental )
@@ -2320,7 +2356,12 @@ void VRAD_ComputeOtherLighting()
 	// bake the static props high quality vertex lighting into the bsp
 	if ( !do_fast && g_bStaticPropLighting )
 	{
+		PhaseBegin();
+		if ( g_bUseCUDA && !s_bNoIndirectGPU )
+			g_bIndirectGPU = VradGPU_IndirectPrepare();
 		StaticPropMgr()->ComputeLighting( THREADINDEX_MAIN );
+		g_bIndirectGPU = false;
+		PhaseEnd( "StaticProp ComputeLighting" );
 	}
 }
 
@@ -2340,7 +2381,9 @@ void VRAD_Finish()
 #ifdef MPI
 	VMPI_SetCurrentStage( "WriteBSPFile" );
 #endif
+	PhaseBegin();
 	WriteBSPFile(source);
+	PhaseEnd( "WriteBSPFile" );
 
 	if ( g_bDumpPatches )
 	{
@@ -2407,6 +2450,23 @@ int ParseCommandLine( int argc, char **argv, bool *onlydetail )
 		else if ( !Q_stricmp( argv[i], "-nossprops" ) )
 		{
 			g_bDisablePropSelfShadowing = true;
+		}
+		else if ( !Q_stricmp( argv[i], "-NoIndirectGPU" ) )
+		{
+			s_bNoIndirectGPU = true;
+		}
+		else if ( !Q_stricmp( argv[i], "-NoPropMark" ) )
+		{
+			g_bNoPropMark = true;
+		}
+		else if ( !Q_stricmp( argv[i], "-cuda" ) )
+		{
+			g_bUseCUDA = true;
+		}
+		else if ( !Q_stricmp( argv[i], "-cudaverify" ) )
+		{
+			g_bUseCUDA = true;
+			g_bCUDAVerify = true;
 		}
 		else if ( !Q_stricmp( argv[i], "-textureshadows" ) )
 		{
@@ -2873,6 +2933,9 @@ void PrintUsage( int argc, char **argv )
         "  -StaticPropPolys   : Perform shadow tests of static props at polygon precision\n"
         "  -OnlyStaticProps   : Only perform direct static prop lighting (vrad debug option)\n"
 		"  -StaticPropNormals : when lighting static props, just show their normal vector\n"
+		"  -cuda          : Visibilite des transferts sur GPU CUDA (repli CPU si indisponible)\n"
+		"  -cudaverify    : Comme -cuda mais compare chaque rayon au CPU et rapporte les ecarts\n"
+		"  -NoPropMark    : Ne pas basculer en eclairage dynamique les props eclaires par des lumieres a style\n"
 		"  -textureshadows : Allows texture alpha channels to block light - rays intersecting alpha surfaces will sample the texture\n"
 		"  -noskyboxrecurse : Turn off recursion into 3d skybox (skybox shadows on world)\n"
 		"  -nossprops      : Globally disable self-shadowing on static props\n"
@@ -2957,6 +3020,9 @@ int RunVRAD( int argc, char **argv )
 int VRAD_Main(int argc, char **argv)
 {
 	g_pFileSystem = NULL;	// Safeguard against using it before it's properly initialized.
+
+	// The GMod tier0 does not build the command line from the process itself.
+	CommandLine()->CreateCmdLine( argc, argv );
 
 	VRAD_Init();
 

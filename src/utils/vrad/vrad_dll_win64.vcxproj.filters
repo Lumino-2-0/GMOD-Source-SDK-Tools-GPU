@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <ItemGroup >
+  <ItemGroup>
     <Filter Include="Header Files">
       <UniqueIdentifier>{922C6F41-C460-59B1-3A59-D4FA6DDC9C37}</UniqueIdentifier>
     </Filter>
@@ -26,7 +26,7 @@
       <UniqueIdentifier>{308191AE-A754-30DF-D5BD-5928E19D585F}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
-  <ItemGroup >
+  <ItemGroup>
     <Library Include="..\..\lib\public\x64\bitmap.lib">
       <Filter>Link Libraries</Filter>
     </Library>
@@ -39,23 +39,19 @@
     <Library Include="..\..\lib\public\x64\raytrace.lib">
       <Filter>Link Libraries</Filter>
     </Library>
-    <Library Include="..\..\lib\public\x64\tier0.lib">
-      <Filter>Link Libraries</Filter>
-    </Library>
     <Library Include="..\..\lib\public\x64\tier1.lib">
       <Filter>Link Libraries</Filter>
     </Library>
     <Library Include="..\..\lib\public\x64\tier2.lib">
       <Filter>Link Libraries</Filter>
     </Library>
-    <Library Include="..\..\lib\public\x64\vstdlib.lib">
-      <Filter>Link Libraries</Filter>
-    </Library>
     <Library Include="..\..\lib\public\x64\vtf.lib">
       <Filter>Link Libraries</Filter>
     </Library>
+    <Library Include="..\..\lib\gmod_x64\tier0.lib" />
+    <Library Include="..\..\lib\gmod_x64\vstdlib.lib" />
   </ItemGroup>
-  <ItemGroup >
+  <ItemGroup>
     <ClInclude Include="disp_vrad.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -375,7 +371,7 @@
       <Filter>Source Files\Common Files</Filter>
     </ClInclude>
   </ItemGroup>
-  <ItemGroup >
+  <ItemGroup>
     <ClCompile Include="..\..\public\BSPTreeData.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -505,12 +501,13 @@
     <ClCompile Include="..\..\public\ScratchPadUtils.cpp">
       <Filter>Source Files\Public Files</Filter>
     </ClCompile>
+    <ClCompile Include="gmod_tier0_shim.cpp" />
   </ItemGroup>
-  <ItemGroup  />
-  <ItemGroup  />
-  <ItemGroup >
+  <ItemGroup />
+  <ItemGroup>
     <None Include="notes.txt">
-      <Filter />    </None>
+      <Filter />
+    </None>
     <None Include="..\..\vpc_scripts\loadaddress.vpc">
       <Filter>VPC Scripts</Filter>
     </None>

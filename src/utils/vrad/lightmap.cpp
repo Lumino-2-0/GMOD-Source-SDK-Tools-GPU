@@ -11,6 +11,7 @@
 #include "radial.h"
 #include "mathlib/bumpvects.h"
 #include "tier1/utlvector.h"
+#include "vrad_gpu.h"
 #include "vmpi.h"
 #include "mathlib/anorms.h"
 #include "map_utils.h"
@@ -662,7 +663,8 @@ bool BuildFacesamples( lightinfo_t *pLightInfo, facelight_t *pFaceLight )
 
 	// allocate a large number of samples for creation -- get copied later!
 	CUtlVector<sample_t> sampleData;
-	sampleData.SetCount( SINGLE_BRUSH_MAP * 2 );
+	// 1 sample max par luxel : certaines maps depassent largement 32x32
+	sampleData.SetCount( MAX( SINGLE_BRUSH_MAP * 2, width * height ) );
 	sample_t *samples = sampleData.Base();
 	sample_t *pSamples = samples;
 
@@ -1670,6 +1672,7 @@ void ExportDirectLightsToWorldLights()
                                                             // non-point sun light
 
 // Helper function - gathers light from sun (emit_skylight)
+static long long s_PairStats[64][16];
 void GatherSampleSkyLightSSE( SSE_sampleLightOutput_t &out, directlight_t *dl, int facenum, 
 							 FourVectors const& pos, FourVectors *pNormals, int normalCount, int iThread,
 							 int nLFlags, int static_prop_index_to_ignore,
@@ -2000,12 +2003,29 @@ void GatherSampleStandardLightSSE( SSE_sampleLightOutput_t &out, directlight_t *
 // normal - surface normal of sample
 // out.m_flDot[] - returned dot products with light vector and each normal
 // out.m_flFalloff - amount of light falloff
+static volatile LONGLONG s_LightTicks[4], s_LightCalls[4];
+
+void VradProf_PrintLights()
+{
+	static const char *names[4] = { "skylight", "skyambient", "standard", "autre" };
+	LARGE_INTEGER f; QueryPerformanceFrequency( &f );
+	for ( int i = 0; i < 3; i++ )
+		Msg( "[PROF] lumiere %-10s : %10.2f s (cumul threads), %lld appels\n", names[i], (double)s_LightTicks[i] / (double)f.QuadPart, s_LightCalls[i] );
+	long long tot[5] = { 0, 0, 0, 0, 0 };
+	for ( int t = 0; t < 64; t++ )
+		for ( int k = 0; k < 5; k++ )
+			tot[k] += s_PairStats[t][k];
+	Msg( "[PROF] paires standard (echantillon x lumiere) : total %lld, >0 %lld, >=0.01 %lld, >=0.1 %lld, >=1 %lld\n", tot[0], tot[1], tot[2], tot[3], tot[4] );
+}
+
 void GatherSampleLightSSE( SSE_sampleLightOutput_t &out, directlight_t *dl, int facenum, 
 					   FourVectors const& pos, FourVectors *pNormals, int normalCount, int iThread,
 					   int nLFlags,
 					   int static_prop_index_to_ignore,
 					   float flEpsilon )
 {
+	LARGE_INTEGER t0; QueryPerformanceCounter( &t0 );
+	int prof = ( dl->light.type == emit_skylight ) ? 0 : ( dl->light.type == emit_skyambient ) ? 1 : 2;
 	for ( int b = 0; b < normalCount; b++ )
 		out.m_flDot[b] = Four_Zeros;
 	out.m_flFalloff = Four_Zeros;
@@ -2046,6 +2066,9 @@ void GatherSampleLightSSE( SSE_sampleLightOutput_t &out, directlight_t *dl, int 
 		out.m_flDot[n] = AndSIMD( out.m_flDot[n], notZero );
 	}
 
+	LARGE_INTEGER t1; QueryPerformanceCounter( &t1 );
+	InterlockedExchangeAdd64( &s_LightTicks[prof], t1.QuadPart - t0.QuadPart );
+	InterlockedIncrement64( &s_LightCalls[prof] );
 }
 
 /*
@@ -2509,8 +2532,16 @@ static void GatherSampleLightAt4Points( SSE_SampleInfo_t& info, int sampleIdx, i
 		if ( skipLight )
 			continue;
 
+		// Passe d'enregistrement GPU : on ne collecte que les rayons des lumieres standard,
+		// sans modifier aucune lightmap (le rejeu refait le calcul complet).
+		bool bRecord = ( g_pRayQueue && g_pRayQueue->mode == 1 );
+		if ( bRecord && dl->light.type != emit_point && dl->light.type != emit_surface && dl->light.type != emit_spotlight )
+			continue;
+
 		GatherSampleLightSSE( out, dl, info.m_FaceNum, info.m_Points, info.m_PointNormals, info.m_NormalCount, info.m_iThread );
-		
+		if ( bRecord )
+			continue;
+
 		// Apply the PVS check filter and compute falloff x dot
 		fltx4 fxdot[NUM_BUMP_VECTS + 1];
 		skipLight = true;
@@ -3114,6 +3145,43 @@ void BuildFacelights (int iThread, int facenum)
 	AllocateLightstyleSamples( fl, 0, sampleInfo.m_NormalCount );
 
 	// sample the lights at each sample location
+	// Mode CUDA : passe 1 = enregistrement des rayons d'ombre (aucun effet de bord), un lot GPU,
+	// passe 2 = calcul normal dont TestLine rejoue les resultats GPU. Sinon : une seule passe CPU.
+	static __declspec( thread ) VradRayQueue_t *s_tlsQueue = NULL;
+	bool useGpu = g_bUseCUDA && !g_pIncremental;
+	VradRayQueue_t *queue = NULL;
+	if ( useGpu )
+	{
+		if ( !s_tlsQueue )
+			s_tlsQueue = new VradRayQueue_t;
+		queue = s_tlsQueue;
+		queue->mode = 1;
+		queue->pos = 0;
+		queue->misses = 0;
+		queue->rays.RemoveAll();
+		g_pRayQueue = queue;
+	}
+	for ( int pass = ( useGpu ? 1 : 2 ); pass <= 2; ++pass )
+	{
+	if ( pass == 2 && useGpu )
+	{
+		int nRays = queue->rays.Count() / 6;
+		bool ok = false;
+		if ( nRays > 0 )
+		{
+			queue->res.SetCount( nRays );
+			ok = VradGPU_TraceRays( queue->rays.Base(), nRays, queue->res.Base(), 2, -1 );
+		}
+		if ( ok )
+		{
+			queue->mode = 2;
+			queue->pos = 0;
+		}
+		else
+		{
+			g_pRayQueue = NULL;
+		}
+	}
 	for ( int grp = 0; grp < numGroups; ++grp )
 	{
 		int nSample = 4 * grp;
@@ -3135,7 +3203,7 @@ void BuildFacelights (int iThread, int facenum)
 		ComputeIlluminationPointAndNormalsSSE( l, positions, normals, &sampleInfo, numSamples );
 
 		// Fixup sample normals in case of smooth faces
-		if ( !l.isflat )
+		if ( !l.isflat && !( useGpu && pass == 1 ) )
 		{
 			for ( int i = 0; i < numSamples; i++ )
 				sample[i].normal = sampleInfo.m_PointNormals[0].Vec( i );
@@ -3143,6 +3211,12 @@ void BuildFacelights (int iThread, int facenum)
 
 		// Iterate over all the lights and add their contribution to this group of spots
 		GatherSampleLightAt4Points( sampleInfo, nSample, numSamples );
+	}
+	}
+	if ( useGpu )
+	{
+		VradGPU_AddDirectStats( queue->mode == 2 ? queue->rays.Count() / 6 : 0, queue->misses );
+		g_pRayQueue = NULL;
 	}
 	
 	// Tell the incremental light manager that we're done with this face.

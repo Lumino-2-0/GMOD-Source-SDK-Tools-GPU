@@ -1,50 +1,70 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: 
+//
 // $NoKeywords: $
+//
 //=============================================================================//
+// vis.c
 
 #include <windows.h>
 #include "vis.h"
 #include "threads.h"
 #include "stdlib.h"
+#include "flow_gpu.h"
 #include "pacifier.h"
 #include "tier1/strtools.h"
 #include "collisionutils.h"
 #include "tier0/icommandline.h"
-#include "vmpi_tools_shared.h"
 #include "ilaunchabledll.h"
 #include "tools_minidump.h"
 #include "loadcmdline.h"
 #include "byteswap.h"
-#include "flow_gpu.h"
 
-int g_numportals;
-int portalclusters;
 
-char inbase[32];
-portal_t* portals;
-leaf_t* leafs;
+int			g_numportals;
+int			portalclusters;
 
-int c_portaltest, c_portalpass, c_portalcheck;
-byte* uncompressedvis;
-byte* vismap, * vismap_p, * vismap_end;
-int originalvismapsize;
+char		inbase[32];
 
-int leafbytes;
-int leaflongs;
-int portalbytes, portallongs;
+portal_t	*portals;
+leaf_t		*leafs;
 
-bool fastvis;
-bool nosort;
-int totalvis;
-portal_t* sorted_portals[MAX_MAP_PORTALS * 2];
-bool g_bUseRadius = false;
-double g_VisRadius = 4096.0 * 4096.0;
-bool g_bLowPriority = false;
-bool g_bDebugMode = false;
-bool g_bTryGPU = false;
-bool g_bNoGPU = false;
+int			c_portaltest, c_portalpass, c_portalcheck;
+
+byte		*uncompressedvis;
+
+byte		*vismap, *vismap_p, *vismap_end;	// past visfile
+int			originalvismapsize;
+
+int			leafbytes;				// (portalclusters+63)>>3
+int			leaflongs;
+
+int			portalbytes, portallongs;
+
+bool		fastvis;
+bool		nosort;
+
+int			totalvis;
+
+portal_t	*sorted_portals[MAX_MAP_PORTALS*2];
+
+bool		g_bUseRadius = false;
+double		g_VisRadius = 4096.0f * 4096.0f;
+
+bool		g_bLowPriority = false;
+// Precision du raycast GPU : g_PassSamples[k] = nombre max de sommets de winding
+// utilises par anneau a la passe k. Points par portail = 1 + 2 * min(n, sommets).
+//   -RaycastType 0 : n = 4 (defaut, 9 points, jusqu'a 81 rayons par paire)
+//   -RaycastType 1 : n = 5 (11 points, environ 25 % d'echantillons en plus)
+//   -Ray <n>       : n choisi librement
+//   -Pass / -final : plusieurs passes, les suivantes ne reprennent que les paires
+//                    candidates pas encore prouvees visibles (voir flow_gpu_host.cpp)
+static const int g_RaycastTypeSamples[2] = { 4, 5 };
+static int		g_PassSamples[16] = { 4 };
+static int		g_NumPasses = 1;
+
+bool		g_bForceCpuFlow = false;
 
 //=============================================================================
 
@@ -183,93 +203,92 @@ ClusterMerge
 Merges the portal visibility for a leaf
 ===============
 */
-void ClusterMerge(int clusternum)
+void ClusterMerge (int clusternum)
 {
-	leaf_t* leaf;
-	//	byte		portalvector[MAX_PORTALS/8];
-	byte		portalvector[MAX_PORTALS / 4];      // 4 because portal bytes is * 2
-	byte		uncompressed[MAX_MAP_LEAFS / 8];
+	leaf_t		*leaf;
+//	byte		portalvector[MAX_PORTALS/8];
+	byte		portalvector[MAX_PORTALS/4];      // 4 because portal bytes is * 2
+	byte		uncompressed[MAX_MAP_LEAFS/8];
 	int			i, j;
 	int			numvis;
-	portal_t* p;
+	portal_t	*p;
 	int			pnum;
 
 	// OR together all the portalvis bits
 
-	memset(portalvector, 0, portalbytes);
+	memset (portalvector, 0, portalbytes);
 	leaf = &leafs[clusternum];
-	for (i = 0; i < leaf->portals.Count(); i++)
+	for (i=0 ; i < leaf->portals.Count(); i++)
 	{
 		p = leaf->portals[i];
 		if (p->status != stat_done)
-			Error("portal not done %d %p %p\n", i, p, portals);
-		for (j = 0; j < portallongs; j++)
-			((long*)portalvector)[j] |= ((long*)p->portalvis)[j];
+			Error ("portal not done %d %p %p\n", i, p, portals);
+		for (j=0 ; j<portallongs ; j++)
+			((long *)portalvector)[j] |= ((long *)p->portalvis)[j];
 		pnum = p - portals;
-		SetBit(portalvector, pnum);
+		SetBit( portalvector, pnum );
 	}
 
 	// convert portal bits to leaf bits
-	numvis = LeafVectorFromPortalVector(portalvector, uncompressed);
+	numvis = LeafVectorFromPortalVector (portalvector, uncompressed);
 
 #if 0
 	// func_viscluster makes this happen all the time because it allows a non-convex set of portals
 	// My analysis says this is ok, but it does make this check for errors in vis kind of useless
-	if (CheckBit(uncompressed, clusternum))
+	if ( CheckBit( uncompressed, clusternum ) )
 		Warning("WARNING: Cluster portals saw into cluster\n");
 #endif
-
-	SetBit(uncompressed, clusternum);
+		
+	SetBit( uncompressed, clusternum );
 	numvis++;		// count the leaf itself
 
 	// save uncompressed for PHS calculation
-	memcpy(uncompressedvis + clusternum * leafbytes, uncompressed, leafbytes);
+	memcpy (uncompressedvis + clusternum*leafbytes, uncompressed, leafbytes);
 
-	qprintf("cluster %4i : %4i visible\n", clusternum, numvis);
+	qprintf ("cluster %4i : %4i visible\n", clusternum, numvis);
 	totalvis += numvis;
 }
 
-static int CompressAndCrosscheckClusterVis(int clusternum)
+static int CompressAndCrosscheckClusterVis( int clusternum )
 {
 	int		optimized = 0;
-	byte	compressed[MAX_MAP_LEAFS / 8];
-	//
-	// compress the bit string
-	//
-	byte* uncompressed = uncompressedvis + clusternum * leafbytes;
-	for (int i = 0; i < portalclusters; i++)
+	byte	compressed[MAX_MAP_LEAFS/8];
+//
+// compress the bit string
+//
+	byte *uncompressed = uncompressedvis + clusternum*leafbytes;
+	for ( int i = 0; i < portalclusters; i++ )
 	{
-		if (i == clusternum)
+		if ( i == clusternum )
 			continue;
 
-		if (CheckBit(uncompressed, i))
+		if ( CheckBit( uncompressed, i ) )
 		{
-			byte* other = uncompressedvis + i * leafbytes;
-			if (!CheckBit(other, clusternum))
+			byte *other = uncompressedvis + i*leafbytes;
+			if ( !CheckBit( other, clusternum ) )
 			{
-				ClearBit(uncompressed, i);
+				ClearBit( uncompressed, i );
 				optimized++;
 			}
 		}
 	}
-	int numbytes = CompressVis(uncompressed, compressed);
+	int numbytes = CompressVis( uncompressed, compressed );
 
-	byte* dest = vismap_p;
+	byte *dest = vismap_p;
 	vismap_p += numbytes;
-
+	
 	if (vismap_p > vismap_end)
-		Error("Vismap expansion overflow");
+		Error ("Vismap expansion overflow");
 
-	dvis->bitofs[clusternum][DVIS_PVS] = dest - vismap;
+	dvis->bitofs[clusternum][DVIS_PVS] = dest-vismap;
 
-	memcpy(dest, compressed, numbytes);
+	memcpy( dest, compressed, numbytes );
 
 	// check vis data
-	DecompressVis(vismap + dvis->bitofs[clusternum][DVIS_PVS], compressed);
+	DecompressVis( vismap + dvis->bitofs[clusternum][DVIS_PVS], compressed );
 
 	return optimized;
 }
-
 
 
 /*
@@ -277,99 +296,50 @@ static int CompressAndCrosscheckClusterVis(int clusternum)
 CalcPortalVis
 ==================
 */
-void CalcPortalVis()
+void CalcPortalVis (void)
 {
-	// ============================================================
-	// 0 - FASTVIS
-	// ============================================================
-	if (fastvis)
+	int		i;
+
+	// fastvis just uses mightsee for a very loose bound
+	if( fastvis )
 	{
-		for (int i = 0; i < g_numportals * 2; i++)
+		for (i=0 ; i<g_numportals*2 ; i++)
 		{
-			portal_t* P = sorted_portals[i];
-			P->portalvis = P->portalflood;
-			P->status = stat_done;
+			portals[i].portalvis = portals[i].portalflood;
+			portals[i].status = stat_done;
 		}
 		return;
 	}
 
-	// ============================================================
-	// 0.5 - FORCE CPU
-	// ============================================================
-	if (CommandLine()->FindParm("-nogpu"))
-	{
-		Msg("[GPU-VIS] NOGPU forced, running CPU only.\n");
-		g_bNoGPU = true;
-		int portalCount = g_numportals * 2;
+// Chemin par defaut : raycast sur GPU (CUDA sur NVIDIA, sinon OpenCL).
+// On retombe sur le flow CPU recursif d'origine avec -cpu, s'il n'y a pas de
+// GPU utilisable, ou si le GPU renvoie une erreur.
+if ( !g_bForceCpuFlow )
+{
+bool bDone = false;
+if ( GPU_Init() )
+bDone = GPU_RunPortalFlowRaycast( g_numportals * 2, g_PassSamples, g_NumPasses );
+GPU_Shutdown();
+if ( bDone )
+return;
+Msg( "[VVIS GPU] GPU indisponible - flow CPU recursif d'origine.\n" );
+}
 
-		RunThreadsOnIndividual(portalCount, true, PortalFlow_CPU);
-		return;
-	}
+	RunThreadsOnIndividual (g_numportals*2, true, PortalFlow);
 
-	// ============================================================
-	// 1 - INIT GPU
-	// ============================================================
-	if (!InitOpenCL_PortalFlow())
-	{
-		Warning("[GPU-VIS] OPENCL init failed, fallback CPU.\n");
-		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
-		return;
-	}
-
-	// ============================================================
-	// 2 - LEAF -> PORTAL TABLE
-	// ============================================================
-	BuildLeafPortalTable();
-
-	// ============================================================
-	// 3 - ALLOC + UPLOAD GPU DATA
-	// ============================================================
-	if (!AllocatePortalFlowBuffers())
-	{
-		Warning("[GPU-VIS] GPU buffer alloc failed, fallback CPU.\n");
-		RunThreadsOnIndividual(g_numportals * 2, true, PortalFlow_CPU);
-		return;
-	}
-
-	// ============================================================
-	// 4 - HYBRID GPU FILTER (MIGHT-SEE ONLY)
-	// ============================================================
-	ApplyHybridMightSeeToCPU();
-	ApplyLeafHybridToPortals();
-
-	// ============================================
-	// CRITICAL: RESET CPU PORTAL STATE
-	// ============================================
-	int portalCount = g_numportals * 2;
-	for (int i = 0; i < portalCount; i++)
-	{
-		portal_t* P = sorted_portals[i];
-		P->status = stat_none;
-	}
-	// ============================================
-
-	BuildPortalOrderByMightSee();
-	RunThreadsOnIndividual(portalCount, true, PortalFlow_CPU_Ordered);
-
-	// ============================================================
-	// 7 - TRYGPU MODE (DEBUG)
-	// ============================================================
-	if (g_bTryGPU)
-	{
-		Msg("[GPU-VIS] TryGPU mode enabled — CPU comparison...\n");
-		// ton code TryGPU ici
-	}
 }
 
 
+void CalcVisTrace (void)
+{
+    RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
+	BuildTracePortals( g_TraceClusterStart );
+	// NOTE: We only schedule the one-way portals out of the start cluster here
+	// so don't run g_numportals*2 in this case
 
 
-void CalcVisTrace(void) {
-	RunThreadsOnIndividual(g_numportals * 2, true, BasePortalVis);
-	BuildTracePortals(g_TraceClusterStart);
-	RunThreadsOnIndividual(g_numportals, true, PortalFlow_CPU);
+	RunThreadsOnIndividual (g_numportals, true, PortalFlow);
 }
-
 
 /*
 ==================
@@ -379,8 +349,7 @@ CalcVis
 void CalcVis (void)
 {
 	int		i;
-
-    RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
+	RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
 	
 
 	SortPortals ();
@@ -395,16 +364,20 @@ void CalcVis (void)
 		ClusterMerge( i );
 	}
 
-	int visible = 0;
-	for (i = 0; i < portalclusters; i++)
+
+	int count = 0;
+	// Now crosscheck each leaf's vis and compress
+	for ( i = 0; i < portalclusters; i++ )
 	{
-		visible += CompressAndCrosscheckClusterVis(i);
+		count += CompressAndCrosscheckClusterVis( i );
 	}
 
-	Msg("Optimized: %d visible clusters (%.2f%%)\n",visible, visible * 100.0 / totalvis);
+		
+	Msg ("Optimized: %d visible clusters (%.2f%%)\n", count, count*100.0/totalvis);
 	Msg ("Total clusters visible: %i\n", totalvis);
 	Msg ("Average clusters visible: %i\n", totalvis / portalclusters);
 }
+
 
 void SetPortalSphere (portal_t *p)
 {
@@ -473,12 +446,12 @@ void LoadPortals (char *name)
 		Error("The map overflows the max portal count (%d of max %d)!\n", g_numportals, MAX_PORTALS / 2 );
 	}
 
-	// tailles en octets : arrondir au prochain octet (8 bits)
-	leafbytes = ((portalclusters + 7) >> 3);            // ceil(portalclusters / 8)
-	leaflongs = (leafbytes + (int)sizeof(long) - 1) / (int)sizeof(long); // rounds up to whole long words
-
-	portalbytes = ((g_numportals * 2 + 7) >> 3);        // ceil((numportals*2) / 8)
-	portallongs = (portalbytes + (int)sizeof(long) - 1) / (int)sizeof(long);
+	// these counts should take advantage of 64 bit systems automatically
+	leafbytes = ((portalclusters+63)&~63)>>3;
+	leaflongs = leafbytes/sizeof(long);
+	
+	portalbytes = ((g_numportals*2+63)&~63)>>3;
+	portallongs = portalbytes/sizeof(long);
 
 // each file portal is split into two memory portals
 	portals = (portal_t*)malloc(2*g_numportals*sizeof(portal_t));
@@ -926,6 +899,97 @@ int ParseCommandLine( int argc, char **argv )
 			Msg ("fastvis = true\n");
 			fastvis = true;
 		}
+		else if (!Q_stricmp(argv[i], "-cpu"))
+		{
+			Msg ("CPU recursive flow = true (GPU raycast disabled)\n");
+			g_bForceCpuFlow = true;
+		}
+		else if (!Q_stricmp(argv[i], "-opencl"))
+		{
+			Msg ("GPU backend forced: OpenCL\n");
+			_putenv_s( "VVIS_GPU_BACKEND", "opencl" );
+		}
+		else if (!Q_stricmp(argv[i], "-cuda"))
+		{
+			Msg ("GPU backend forced: CUDA (OpenCL fallback if unavailable)\n");
+			_putenv_s( "VVIS_GPU_BACKEND", "cuda" );
+		}
+		else if (!Q_stricmp(argv[i], "-final"))
+		{
+			g_PassSamples[0] = 4;
+			g_PassSamples[1] = 8;
+			g_NumPasses = 2;
+			Msg( "final mode: pass 1 = default (4), pass 2 = refinement (8) on unproven pairs only\n" );
+		}
+		else if (!Q_stricmp(argv[i], "-RaycastType") && i + 1 < argc)
+		{
+			int t = atoi( argv[++i] );
+			if ( t < 0 || t > 1 )
+			{
+				Warning( "-RaycastType must be 0 or 1\n" );
+				return 100000;
+			}
+			g_PassSamples[0] = g_RaycastTypeSamples[t];
+			g_NumPasses = 1;
+			Msg( "RaycastType %d (%d samples cap)\n", t, g_PassSamples[0] );
+		}
+		else if (!Q_stricmp(argv[i], "-Ray") && i + 1 < argc)
+		{
+			int n = atoi( argv[++i] );
+			if ( n < 1 )
+			{
+				Warning( "-Ray must be >= 1\n" );
+				return 100000;
+			}
+			g_PassSamples[0] = n;
+			g_NumPasses = 1;
+			Msg( "Custom raycast samples cap = %d\n", n );
+		}
+		else if (!Q_stricmp(argv[i], "-Pass") && i + 1 < argc)
+		{
+			// Accepte "0:RaycastType=1,1:RaycastType=3" (virgules/espaces, un ou plusieurs arguments)
+			// ou "0:Ray=6". Les arguments suivants contenant ':' sont aussi consommes.
+			g_NumPasses = 0;
+			while ( i + 1 < argc && argv[i+1][0] != '-' && strchr( argv[i+1], ':' ) )
+			{
+				char buf[256];
+				V_strncpy( buf, argv[++i], sizeof( buf ) );
+				for ( char *tok = strtok( buf, ", " ); tok; tok = strtok( NULL, ", " ) )
+				{
+					char *colon = strchr( tok, ':' );
+					char *eq = colon ? strchr( colon, '=' ) : NULL;
+					if ( !colon || !eq || g_NumPasses >= 16 )
+					{
+						Warning( "Invalid -Pass entry \"%s\"\n", tok );
+						return 100000;
+					}
+					*colon = 0; *eq = 0;
+					const char *key = colon + 1;
+					int val = atoi( eq + 1 );
+					int s;
+					if ( !Q_stricmp( key, "RaycastType" ) && val >= 0 && val <= 1 )
+						s = g_RaycastTypeSamples[val];
+					else if ( !Q_stricmp( key, "Ray" ) && val >= 1 )
+						s = val;
+					else
+					{
+						Warning( "Invalid -Pass value \"%s=%s\"\n", key, eq + 1 );
+						return 100000;
+					}
+					g_PassSamples[g_NumPasses++] = s;
+				}
+			}
+			if ( g_NumPasses == 0 )
+			{
+				Warning( "-Pass: no valid pass given\n" );
+				return 100000;
+			}
+			Msg( "%d raycast pass(es)\n", g_NumPasses );
+		}
+		else if (!Q_stricmp(argv[i], "-raycast"))
+		{
+			Msg ("%s ignored: GPU raycast is the default flow\n", argv[i]);
+		}
 		else if (!Q_stricmp(argv[i], "-v") || !Q_stricmp(argv[i], "-verbose"))
 		{
 			Msg ("verbose = true\n");
@@ -965,69 +1029,13 @@ int ParseCommandLine( int argc, char **argv )
 		else if ( !Q_stricmp( argv[i], CMDLINEOPTION_NOVCONFIG ) )
 		{
 		}
-		else if ( !Q_stricmp( argv[i], "-game" ) )
+		else if ( !Q_stricmp( argv[i], "-vproject" ) || !Q_stricmp( argv[i], "-game" ) )
 		{
 			++i;
 		}
-		// Mise a jour 26/08/2025 : ajout du support de l'option -vproject qui est un peu "deprecated" de nos temps :-)
-		else if (!Q_stricmp( argv[i], "-vproject")) 
-		{
-			Msg("Please, use -game between -vproject !\n");
-			++i;
-		}
-
-
-		/*############################################ MOD OPEN CL/GPU ############################################*/
-
-		else if (!Q_stricmp(argv[i], "-nogpu"))
-		{
-			Msg("GPU désactivé, utilisation du CPU.\n");
-		}
-		else if (!Q_stricmp(argv[i], "-TryGPU"))
-		{
-			Msg("Mode de comparaison GPU/CPU active (TryGPU).\n");
-			g_bTryGPU = true;
-		}
-		else if (!Q_stricmp(argv[i], "-debug"))
-		{
-			Msg("Mode debug GPU/OpenCL active.\n");
-			g_bDebugMode = true;
-		}
-		else if (!Q_stricmp(argv[i], "-NoCheckLib"))
-		{
-			// Done on startup : main. Désactive la vérif de la presence dll filesystem_stdio dans son repertoire.
-		}
-		else if (!stricmp(argv[i], "-PresetGPU"))
-		{
-
-			i++;
-			if (i < argc)
-			{
-				g_gpuPreset = atoi(argv[i]);
-				if (g_gpuPreset < 0 || g_gpuPreset > 3)
-					g_gpuPreset = 2; // défaut : Normal/Aggressive
-			}
-			else
-			{
-				g_gpuPreset = 2;
-			}
-		}
-		/*############################################ MOD OPEN CL/GPU ############################################*/
-
 		else if ( !Q_stricmp( argv[i], "-allowdebug" ) || !Q_stricmp( argv[i], "-steam" ) )
 		{
 			// nothing to do here, but don't bail on this option
-		}
-		// NOTE: the -mpi checks must come last here because they allow the previous argument 
-		// to be -mpi as well. If it game before something else like -game, then if the previous
-		// argument was -mpi and the current argument was something valid like -game, it would skip it.
-
-		else if ( !Q_strncasecmp( argv[i], "-mpi", 4 ) || !Q_strncasecmp( argv[i-1], "-mpi", 4 ) )
-		{
-			// Mise a jour 26/08/2025 : desactivation du support de MPI car pas compatible avec le compilateur GMOD
-			if ( stricmp( argv[i], "-mpi" ) == 0 )
-				Msg("MPI is not compatible with GMOD compiler\n");
-			Msg("The MPI will not be used even if you actived the option :) \n");
 		}
 		else if (argv[i][0] == '-')
 		{
@@ -1045,12 +1053,10 @@ int ParseCommandLine( int argc, char **argv )
 void PrintCommandLine( int argc, char **argv )
 {
 	Warning( "Command line: " );
-
 	for ( int z=0; z < argc; z++ )
 	{
 		Warning( "\"%s\" ", argv[z] );
 	}
-
 	Warning( "\n\n" );
 }
 
@@ -1063,43 +1069,44 @@ void PrintUsage( int argc, char **argv )
 		"usage  : vvis [options...] bspfile\n"
 		"example: vvis -fast c:\\hl2\\hl2\\maps\\test\n"
 		"\n"
+		"GPU options:\n"
+		"\n"
+		"  (default)       : GPU raycast (CUDA on NVIDIA, else OpenCL), CPU if no GPU\n"
+		"  VVIS_GPU_DEVICE=<n> (env) : use the n-th GPU\n"
+		"  -opencl         : Force OpenCL (NVIDIA, AMD, Intel)\n"
+		"  -cuda           : Force CUDA (NVIDIA)\n"
+		"  -cpu            : Original recursive CPU flow (no GPU)\n"
+		"\n"
+		"Raycast precision (GPU):\n"
+		"\n"
+		"  -final             : Smart multi-pass (like vrad -final): default pass, then a\n"
+		"                       refinement pass (cap 8) re-testing only unproven pairs.\n"
+		"  -RaycastType <0-1> : 0 = default (cap 4, 9 points/portal)\n"
+		"                       1 = more precise (cap 5, 11 points/portal, ~+25%% samples)\n"
+		"  -Ray <n>           : Custom sample cap per ring (1 + 2*min(n, vertices)\n"
+		"                       points per portal). Default: 4 (= type 0, 9 points,\n"
+		"                       up to 81 rays per portal pair). Type 1 = 5.\n"
+		"                       Values above ~8 (max portal vertices) have no effect.\n"
+		"  -Pass <list>       : Several passes, e.g. -Pass 0:Ray=4,1:RaycastType=1\n"
+		"                       (or 0:Ray=2,1:Ray=8). Pass N+1 only re-tests the\n"
+		"                       candidate pairs not yet proven visible by earlier\n"
+		"                       passes; results are merged (never removes visibility).\n"
+		"                       Each pass prints a progress bar, % and time.\n"
+		"\n"
 		"Common options:\n"
 		"\n"
-		"  -v (or -verbose): Turn on verbose output (also shows more command\n"
-		"  -fast           : Only do first quick pass on vis calculations.\n"
-
-		"  -mpi            : Use VMPI to distribute computations [GPU_MOD : UNACTIVE IN THIS VERSION OF VVIS].\n"
-		"  -mpi_pw <pw>    : Use a password to choose a specific set of VMPI workers [GPU_MOD : UNACTIVE IN THIS VERSION OF VVIS].\n"
-
+		"  -game <directory>     : Game directory (auto-detected for Garry's Mod)\n"
+		"  -vproject <directory> : Same as -game.\n"
+		"  -threads <n>    : Number of CPU threads (defaults to the processor count).\n"
+		"  -fast           : Only do the first quick pass.\n"
 		"  -low            : Run as an idle-priority process.\n"
-		"                    env_fog_controller specifies one.\n"
-		"\n"
-		"  -vproject <directory> : Override the VPROJECT environment variable.\n"
-		"  -game <directory>     : Same as -vproject.\n"
-		"\n"
-		"Other options:\n"
-		"  -novconfig      : Don't bring up graphical UI on vproject errors.\n"
-		"  -radius_override: Force a vis radius, regardless of whether an\n"
-		"  -threads        : Control the number of threads vbsp uses (defaults to the #\n"
-		"                    or processors on your machine).\n"
-		"  -nosort         : Don't sort portals (sorting is an optimization).\n"
-		"  -tmpin          : Make portals come from \\tmp\\<mapname>.\n"
-		"  -tmpout         : Make portals come from \\tmp\\<mapname>.\n"
-		"  -trace <start cluster> <end cluster> : Writes a linefile that traces the vis from one cluster to another for debugging map vis.\n"
-		"  -FullMinidumps  : Write large minidumps on crash.\n"
-		"  -x360		   : Generate Xbox360 version of vsp\n"
-		"  -nox360		   : Disable generation Xbox360 version of vsp (default)\n"
-		"  -nogpu          : Forcer l'utilisation du fallback version CPU (Old).\n\n"
-		"############################################################# GPU MOD OPTIONS ############################################################# \n\n"
-		"  -TryGPU		   : Permet de comparer les resultats GPU vs CPU pour verification (peut ralentir le processus de quelques secondes/minutes).\n"
-		"  -debug 		   : Active les messages de debug GPU/OpenCL. (peut ralentir considerablement le temps de compilation, ne le mettre que si necessaire)\n"
-		"  -PresetGPU      : Choisit l'agressivite de l'optimisation GPU.\n"
-		"       0 = Soft (quasi-identique VVIS original)\n"
-		"       1 = Normal\n"
-		"       2 = Aggressive (Area occlusion)\n"
-		"       3 = Ultra (pour tres grandes maps/complexes)\n"
+		"  -v, -verbose    : Verbose output.\n"
+		"  -radius_override <r> : Force a vis radius (default: env_fog_controller farz).\n"
+		"  -nosort         : Don't sort portals.\n"
+		"  -trace <start cluster> <end cluster> : Write a linefile tracing the vis between two clusters.\n"
 		"\n"
 		);
+
 }
 
 
@@ -1111,7 +1118,7 @@ int RunVVis( int argc, char **argv )
 	double		start, end;
 
 
-	Msg( "Valve Software - Lumastor & IronKnight Mod - vvis GPU (%s)\n", __DATE__ );
+	Msg( "Valve + Lumastor-IronKnight Software - vvis_gpu.exe (%s)\n", __DATE__ );
 
 	verbose = false;
 
@@ -1120,13 +1127,6 @@ int RunVVis( int argc, char **argv )
 
 	CmdLib_InitFileSystem( argv[ argc - 1 ] );
 
-	// The ExpandPath is just for VMPI. VMPI's file system needs the basedir in front of all filenames,
-	// so we prepend qdir here.
-
-	// XXX(johns): Somewhat preserving legacy behavior here to avoid changing tool behavior, there's no specific rhyme
-	//             or reason to this. We get just the base name we were passed, discarding any directory or extension
-	//             information. We then ExpandPath() it (see VMPI comment above), and tack on .bsp for the file access
-	//             parts.
 	V_FileBase( argv[ argc - 1 ], mapFile, sizeof( mapFile ) );
 	V_strncpy( mapFile, ExpandPath( mapFile ), sizeof( mapFile ) );
 	V_strncat( mapFile, ".bsp", sizeof( mapFile ) );
@@ -1143,6 +1143,12 @@ int RunVVis( int argc, char **argv )
 	}
 
 	start = Plat_FloatTime();
+
+	// Setup the logfile.
+	char logFile[512];
+	_snprintf( logFile, sizeof(logFile), "%s.log", source );
+	SetSpewFunctionLogFile( logFile );
+	
 
 	// Run in the background?
 	if( g_bLowPriority )
@@ -1203,51 +1209,6 @@ int RunVVis( int argc, char **argv )
 
 		visdatasize = vismap_p - dvisdata;
 		Msg ("visdatasize:%i  compressed from %i\n", visdatasize, originalvismapsize*2);
-		byte verify[MAX_MAP_LEAFS / 8];
-		bool anyMismatch = false;
-
-		for (int ci = 0; ci < portalclusters; ++ci) {
-			// sécurité : bitofs peut contenir 0 pour clusters vides, skip si hors limites
-			int ofs = dvis->bitofs[ci][DVIS_PVS];
-			if (ofs <= 0 || ofs >= MAX_MAP_VISIBILITY) {
-				// clusters vides acceptable ; mais log si inconsistant
-				continue;
-			}
-			byte* srcCompressed = vismap + ofs;
-			// Décompresser dans verify
-			DecompressVis(srcCompressed, verify);
-			byte* expected = uncompressedvis + ci * leafbytes;
-			if (memcmp(verify, expected, leafbytes) != 0) {
-				Warning("POST-WRITE VERIFY MISMATCH: cluster %d (leafbytes=%d)\n", ci, leafbytes);
-				// dumps pour analyse
-				char fname[256];
-				snprintf(fname, sizeof(fname), "post_uncompressed_cluster_%d.bin", ci);
-				FILE* f = fopen(fname, "wb");
-				if (f) { fwrite(expected, 1, leafbytes, f); fclose(f); }
-				snprintf(fname, sizeof(fname), "post_verify_cluster_%d.bin", ci);
-				f = fopen(fname, "wb");
-				if (f) { fwrite(verify, 1, leafbytes, f); fclose(f); }
-				// Dump compressed block: we don't know its length directly; write until next cluster or vismap_p
-				int nextOfs = (ci + 1 < portalclusters) ? dvis->bitofs[ci + 1][DVIS_PVS] : (int)(vismap_p - vismap);
-				if (nextOfs <= ofs) nextOfs = (int)(vismap_p - vismap);
-				int clen = nextOfs - ofs;
-				if (clen > 0) {
-					snprintf(fname, sizeof(fname), "post_compressed_cluster_%d.bin", ci);
-					f = fopen(fname, "wb");
-					if (f) { fwrite(srcCompressed, 1, clen, f); fclose(f); }
-				}
-				anyMismatch = true;
-				// on continue pour collecter d'autres cas
-			}
-		}
-		if (anyMismatch) {
-			Warning("POST-WRITE VERIFY: mismatches detected, dumps written to working dir. Aborting write for investigation.\n");
-			// Optionnel : empêcher l'écriture du BSP pour inspection locale
-			// Error("Aborting due to PVS verification failures.");
-		}
-		else {
-			qprintf("POST-WRITE VERIFY OK: all clusters match uncompressedvis\n");
-		}
 
 		Msg ("writing %s\n", mapFile);
 		WriteBSPFile (mapFile);
@@ -1277,19 +1238,31 @@ int RunVVis( int argc, char **argv )
 
 /*
 ===========
-	main
+main
 ===========
 */
-
 int main (int argc, char **argv)
 {
-
-	SetConsoleOutputCP(CP_UTF8);
 	CommandLine()->CreateCmdLine( argc, argv );
 
 	MathLib_Init( 2.2f, 2.2f, 0.0f, 1.0f, false, false, false, false );
 	InstallAllocationFunctions();
 	InstallSpewFunction();
 
+	SetupDefaultToolsMinidumpHandler();
+
 	return RunVVis( argc, argv );
 }
+
+#ifdef VVIS_BUILD_AS_DLL
+class CVVisDLL : public ILaunchableDLL
+{
+public:
+	virtual int main( int argc, char **argv )
+	{
+		return ::main( argc, argv );
+	}
+};
+
+EXPOSE_SINGLE_INTERFACE( CVVisDLL, ILaunchableDLL, LAUNCHABLE_DLL_INTERFACE_VERSION );
+#endif

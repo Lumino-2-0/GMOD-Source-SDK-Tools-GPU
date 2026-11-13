@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Header Files">
@@ -31,9 +31,6 @@
       <Filter>Link Libraries</Filter>
     </Library>
     <Library Include="..\..\lib\public\x64\vstdlib.lib">
-      <Filter>Link Libraries</Filter>
-    </Library>
-    <Library Include="..\..\lib\public\x64\OpenCL.lib">
       <Filter>Link Libraries</Filter>
     </Library>
   </ItemGroup>
@@ -200,6 +197,15 @@
     <ClCompile Include="..\..\public\zip_utils.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="flow_gpu_host.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="flow_gpu_kernel.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="flow_gpu_kernel.cu" />
+    <None Include="build_ptx.ps1" />
+    <None Include="..\..\..\..\..\..\..\..\MAP_SERVEUR\Kindercity\Gm_Kindercity_Night\gm_kindercity_night.vmf" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\vpc_scripts\loadaddress.vpc">
@@ -238,6 +244,5 @@
     <None Include="vvis_dll.vpc">
       <Filter>VPC Scripts</Filter>
     </None>
-    <None Include="kernel_test(no_compiled).cl" />
   </ItemGroup>
 </Project>

@@ -15,6 +15,7 @@
 #include "bsptreedata.h"
 #include "cmodel.h"
 #include "gamebspfile.h"
+#include "materialsystem/imaterial.h"
 #include "materialsystem/hardwareverts.h"
 #include "utlbuffer.h"
 #include "utlrbtree.h"
@@ -24,8 +25,11 @@
 #include "physdll.h"
 #include "tier0/dbg.h"
 #include "lumpfiles.h"
+#include "vtf/vtf.h"
 #include "lzma/lzma.h"
 #include "tier1/lzmaDecoder.h"
+
+#include "tier0/memdbgon.h"
 
 //=============================================================================
 
@@ -213,6 +217,7 @@ END_BYTESWAP_DATADESC()
 BEGIN_BYTESWAP_DATADESC( dfaceid_t )
 	DEFINE_FIELD( hammerfaceid, FIELD_SHORT ),
 END_BYTESWAP_DATADESC()
+
 
 BEGIN_BYTESWAP_DATADESC( dbrush_t )
 	DEFINE_FIELD( firstside, FIELD_INTEGER ),
@@ -626,6 +631,7 @@ dface_t		dfaces[MAX_MAP_FACES];
 
 int			numfaceids;
 CUtlVector<dfaceid_t>	dfaceids;
+
 
 int			numfaces_hdr;
 dface_t		dfaces_hdr[MAX_MAP_FACES];
@@ -1841,6 +1847,29 @@ void ValidateLump( int lump, int length, int size, int forceVersion )
 }
 
 //-----------------------------------------------------------------------------
+// Controle de capacite : CopyLump copie le lump par memcpy SANS borne vers des
+// tableaux statiques de taille MAX_MAP_*. Un lump plus grand que le tableau
+// ecrase la memoire voisine en silence, et le BSP reecrit est corrompu (cas
+// reel : 8604 brushes pour MAX_MAP_BRUSHES=8192 -> crash "OUT OF MEMORY" du
+// moteur). On refuse donc explicitement toute carte qui depasse une limite.
+//-----------------------------------------------------------------------------
+static void CheckLumpCapacity( int lump, int elemSize, int capacity, const char *pArrayName )
+{
+	if ( !g_pBSPHeader || elemSize <= 0 )
+		return;
+	unsigned int count = (unsigned int)g_pBSPHeader->lumps[lump].filelen / (unsigned int)elemSize;
+	if ( count > (unsigned int)capacity )
+	{
+		Error( "Lump %d (%s) : %u elements, limite %d depassee.\n"
+			"Augmenter la limite MAX_MAP_* correspondante dans public/bspfile.h.\n",
+			lump, pArrayName, count, capacity );
+	}
+}
+
+#define CHECK_LUMP_CAPACITY( lump, array ) \
+	CheckLumpCapacity( lump, (int)sizeof( (array)[0] ), (int)ARRAYSIZE( array ), #array )
+
+//-----------------------------------------------------------------------------
 //	Add Lumps of integral types without datadescs
 //-----------------------------------------------------------------------------
 template< class T >
@@ -1935,7 +1964,7 @@ int CopyLumpInternal( int lump, T *dest, int forceVersion )
 	unsigned int length = g_pBSPHeader->lumps[lump].filelen;
 	unsigned int ofs = g_pBSPHeader->lumps[lump].fileofs;
 	unsigned int count = length / sizeof(T);
-	
+
 	ValidateLump( lump, length, sizeof(T), forceVersion );
 
 	if ( g_bSwapOnLoad )
@@ -2037,6 +2066,10 @@ int LoadLeafs( void )
 				Error( "odd size for LUMP_LEAFS\n" );
 			}
 			int count = length / size;
+#if !defined( BSP_USE_LESS_MEMORY )
+			if ( count > MAX_MAP_LEAFS )
+				Error( "LUMP_LEAFS : %d feuilles, limite MAX_MAP_LEAFS (%d) depassee.\n", count, MAX_MAP_LEAFS );
+#endif
 
 			void *pSrcBase = ( ( byte * )g_pBSPHeader + g_pBSPHeader->lumps[LUMP_LEAFS].fileofs );
 			dleaf_version_0_t *pSrc = (dleaf_version_0_t *)pSrcBase;
@@ -2068,6 +2101,9 @@ int LoadLeafs( void )
 		}
 
 	case 1:
+#if !defined( BSP_USE_LESS_MEMORY )
+		CHECK_LUMP_CAPACITY( LUMP_LEAFS, dleafs );
+#endif
 		return CopyLump( LUMP_LEAFS, dleafs );
 
 	default:
@@ -2209,6 +2245,41 @@ void LoadBSPFile( const char *filename )
 {
 	OpenBSPFile( filename );
 
+	// Capacite des tableaux statiques (voir CheckLumpCapacity). Les lumps
+	// charges dans des CUtlVector sont dimensionnes dynamiquement : rien a
+	// verifier. Les lumps de feuilles sont verifies a l'element pres plus bas,
+	// leur taille disque dependant de la version du lump.
+	CHECK_LUMP_CAPACITY( LUMP_MODELS, dmodels );
+	CHECK_LUMP_CAPACITY( LUMP_VERTEXES, dvertexes );
+	CHECK_LUMP_CAPACITY( LUMP_PLANES, dplanes );
+	CHECK_LUMP_CAPACITY( LUMP_NODES, dnodes );
+	CHECK_LUMP_CAPACITY( LUMP_TEXDATA, dtexdata );
+	CHECK_LUMP_CAPACITY( LUMP_FACES, dfaces );
+	CHECK_LUMP_CAPACITY( LUMP_FACES_HDR, dfaces_hdr );
+	CHECK_LUMP_CAPACITY( LUMP_PRIMITIVES, g_primitives );
+	CHECK_LUMP_CAPACITY( LUMP_PRIMVERTS, g_primverts );
+	CHECK_LUMP_CAPACITY( LUMP_PRIMINDICES, g_primindices );
+	CHECK_LUMP_CAPACITY( LUMP_ORIGINALFACES, dorigfaces );
+	CHECK_LUMP_CAPACITY( LUMP_LEAFFACES, dleaffaces );
+	CHECK_LUMP_CAPACITY( LUMP_LEAFBRUSHES, dleafbrushes );
+	CHECK_LUMP_CAPACITY( LUMP_SURFEDGES, dsurfedges );
+	CHECK_LUMP_CAPACITY( LUMP_EDGES, dedges );
+	CHECK_LUMP_CAPACITY( LUMP_BRUSHES, dbrushes );
+	CHECK_LUMP_CAPACITY( LUMP_BRUSHSIDES, dbrushsides );
+	CHECK_LUMP_CAPACITY( LUMP_AREAS, dareas );
+	CHECK_LUMP_CAPACITY( LUMP_AREAPORTALS, dareaportals );
+	CHECK_LUMP_CAPACITY( LUMP_VISIBILITY, dvisdata );
+	CHECK_LUMP_CAPACITY( LUMP_WORLDLIGHTS, dworldlightsLDR );
+	CHECK_LUMP_CAPACITY( LUMP_WORLDLIGHTS_HDR, dworldlightsHDR );
+	CHECK_LUMP_CAPACITY( LUMP_LEAFWATERDATA, dleafwaterdata );
+	CheckLumpCapacity( LUMP_VERTNORMALS, (int)sizeof( Vector ), MAX_MAP_VERTNORMALS, "g_vertnormals" );
+	CHECK_LUMP_CAPACITY( LUMP_VERTNORMALINDICES, g_vertnormalindices );
+	CheckLumpCapacity( LUMP_CLIPPORTALVERTS, (int)sizeof( Vector ), MAX_MAP_PORTALVERTS, "g_ClipPortalVerts" );
+	CHECK_LUMP_CAPACITY( LUMP_CUBEMAPS, g_CubemapSamples );
+	CHECK_LUMP_CAPACITY( LUMP_OVERLAYS, g_Overlays );
+	CHECK_LUMP_CAPACITY( LUMP_WATEROVERLAYS, g_WaterOverlays );
+	CHECK_LUMP_CAPACITY( LUMP_OVERLAY_FADES, g_OverlayFades );
+
 	nummodels = CopyLump( LUMP_MODELS, dmodels );
 	numvertexes = CopyLump( LUMP_VERTEXES, dvertexes );
 	numplanes = CopyLump( LUMP_PLANES, dplanes );
@@ -2230,6 +2301,7 @@ void LoadBSPFile( const char *filename )
 		numfaces_hdr = 0;
 
 	CopyOptionalLump( LUMP_FACEIDS, dfaceids );
+
 
 	g_numprimitives = CopyLump( LUMP_PRIMITIVES, g_primitives );
 	g_numprimverts = CopyLump( LUMP_PRIMVERTS, g_primverts );
@@ -2360,6 +2432,7 @@ void UnloadBSPFile()
 	numfaces_hdr = 0;
 
 	dfaceids.Purge();
+
 
 	g_numprimitives = 0;
 	g_numprimverts = 0;
@@ -2664,6 +2737,7 @@ void WriteBSPFile( const char *filename, char *pUnused )
     if (numfaces_hdr)
 		AddLump( LUMP_FACES_HDR, dfaces_hdr, numfaces_hdr, LUMP_FACES_VERSION );
 	AddLump ( LUMP_FACEIDS, dfaceids, numfaceids );
+
 
 	AddLump( LUMP_ORIGINALFACES, dorigfaces, numorigfaces );     // original faces lump
 	AddLump( LUMP_BRUSHES, dbrushes, numbrushes );
@@ -3737,7 +3811,8 @@ void BuildClusterTable( void )
 {
 	int i, j;
 	int leafCount;
-	int	leafList[MAX_MAP_LEAFS];
+	CUtlVector<int> leafList;
+	leafList.SetCount( MAX_MAP_LEAFS );
 
 	g_ClusterLeaves.SetCount( dvis->numclusters );
 	for ( i = 0; i < dvis->numclusters; i++ )
@@ -3756,7 +3831,7 @@ void BuildClusterTable( void )
 		if ( leafCount )
 		{
 			g_ClusterLeaves[i].leafs.SetCount( leafCount );
-			memcpy( g_ClusterLeaves[i].leafs.Base(), leafList, sizeof(int) * leafCount );
+			memcpy( g_ClusterLeaves[i].leafs.Base(), leafList.Base(), sizeof(int) * leafCount );
 		}
 	}
 }

@@ -1,0 +1,16 @@
+[vpc crc file version 3]
+_.HOST_WIN64.HOST_WINDOWS.SOURCESDK.VS2022.WINDOWS_/vpcgame:valve_
+PROJECT.launcher_main.GAME.hl2mp.PLATFORM.win64
+74423142 launcher_main_mod_hl2mp.vpc
+ea335656 launcher_main.vpc
+e2b4bc24 ..\vpc_scripts\source_exe_base.vpc
+8ef6e028 ..\vpc_scripts\platform_dirs.vpc
+a75746b9 ..\vpc_scripts\source_base.vpc
+ef326a62 ..\vpc_scripts\definitions\win32_2010.def
+6ae330d7 ..\vpc_scripts\source_exe_win_win32_base.vpc
+0218a46e ..\vpc_scripts\version.vpc
+eab33351 ..\vpc_scripts\loadaddress.vpc
+2c4725e6 ..\vpc_scripts\source_exe_win_win32_debug.vpc
+e53d8458 ..\vpc_scripts\source_exe_win_win32_release.vpc
+90243d6c ..\vpc_scripts\source_win32_base.vpc
+10b424ea ..\vpc_scripts\source_video_base.vpc

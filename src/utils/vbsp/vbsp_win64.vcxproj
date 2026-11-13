@@ -49,7 +49,7 @@
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
     <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PostBuildEventUseInBuild>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">..\..\..\bin</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</IntDir>
     <ExecutablePath Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ExecutablePath);$(Path)</ExecutablePath>
     <PreBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</PreBuildEventUseInBuild>
@@ -59,17 +59,14 @@
     <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</PostBuildEventUseInBuild>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <PreBuildEvent>
-      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f "delims=" %%A in ('attrib "..\..\..\game\bin\x64\$(TargetFileName)"') do set valveTmpIsReadOnly="%%A"
-set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%
-if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
-</Command>
+    <PreBuildEvent >
+      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f &quot;delims=&quot; %%A in (&apos;attrib &quot;..\..\..\game\bin\x64\$(TargetFileName)&quot;&apos;) do set valveTmpIsReadOnly=&quot;%%A&quot;&#x0D;&#x0A;set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%&#x0D;&#x0A;if &quot;%valveTmpIsReadOnlyLetter%&quot;==&quot;R&quot; del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;</Command>
     </PreBuildEvent>
-    <ClCompile>
+    <ClCompile >
       <AdditionalOptions> /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;..\common;..\vmpi</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_WINDOWS;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;EXENAME=vbsp;_DLL_EXT=.dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;MACRO_MATHLIB;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_WINDOWS;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;EXENAME=vbsp;_DLL_EXT=.dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;MACRO_MATHLIB;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\vbsp;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -98,12 +95,12 @@ if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
       <ErrorReporting>Prompt</ErrorReporting>
       <BuildStlModules>false</BuildStlModules>
     </ClCompile>
-    <ResourceCompile>
+    <ResourceCompile >
       <PreprocessorDefinitions>_DEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <Culture>1033</Culture>
     </ResourceCompile>
-    <PreLinkEvent />
-    <Link>
+    <PreLinkEvent  />
+    <Link >
       <AdditionalOptions>/NXCOMPAT /ignore:4221</AdditionalOptions>
       <AdditionalDependencies>;shell32.lib;user32.lib;advapi32.lib;gdi32.lib;comdlg32.lib;ole32.lib;ws2_32.lib;odbc32.lib;odbccp32.lib;winmm.lib</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
@@ -113,53 +110,40 @@ if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
       <ProgramDatabaseFile>$(IntDir)/$(TargetName).pdb</ProgramDatabaseFile>
       <SubSystem>Console</SubSystem>
-      <BaseAddress>
-      </BaseAddress>
+      <BaseAddress> </BaseAddress>
       <TargetMachine>MachineX64</TargetMachine>
       <LinkErrorReporting>PromptImmediately</LinkErrorReporting>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
-    <Manifest>
+    <Manifest >
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Manifest>
-    <Xdcmake>
+    <Xdcmake >
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Xdcmake>
-    <Bscmake>
+    <Bscmake >
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <OutputFile>$(OutDir)/vbsp.bsc</OutputFile>
     </Bscmake>
-    <PostBuildEvent>
+    <PostBuildEvent >
       <Message>Publishing to ..\..\..\game\bin\x64</Message>
-      <Command>copy "$(TargetDir)"$(TargetFileName) ..\..\..\game\bin\x64\$(TargetFileName) &gt;nul
-if ERRORLEVEL 1 goto BuildEventFailed
-if exist "$(TargetDir)"$(TargetName).map copy "$(TargetDir)"$(TargetName).map ..\..\..\game\bin\x64\$(TargetName).map &gt;nul
-copy "$(TargetDir)"$(TargetName).pdb ..\..\..\game\bin\x64\$(TargetName).pdb &gt;nul
-if ERRORLEVEL 1 goto BuildEventFailed
-goto BuildEventOK
-:BuildEventFailed
-echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***
-del /q "$(TargetDir)"$(TargetFileName)
-exit 1
-:BuildEventOK
-</Command>
+      <Command>copy &quot;$(TargetDir)&quot;$(TargetFileName) ..\..\..\game\bin\x64\$(TargetFileName) &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;if exist &quot;$(TargetDir)&quot;$(TargetName).map copy &quot;$(TargetDir)&quot;$(TargetName).map ..\..\..\game\bin\x64\$(TargetName).map &gt;nul&#x0D;&#x0A;copy &quot;$(TargetDir)&quot;$(TargetName).pdb ..\..\..\game\bin\x64\$(TargetName).pdb &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;goto BuildEventOK&#x0D;&#x0A;:BuildEventFailed&#x0D;&#x0A;echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***&#x0D;&#x0A;del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;exit 1&#x0D;&#x0A;:BuildEventOK&#x0D;&#x0A;</Command>
     </PostBuildEvent>
-    <CustomBuildStep />
+    <CustomBuildStep  />
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <PreBuildEvent>
-      <Command>
-      </Command>
+    <PreBuildEvent >
+      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f &quot;delims=&quot; %%A in (&apos;attrib &quot;..\..\..\game\bin\x64\$(TargetFileName)&quot;&apos;) do set valveTmpIsReadOnly=&quot;%%A&quot;&#x0D;&#x0A;set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%&#x0D;&#x0A;if &quot;%valveTmpIsReadOnlyLetter%&quot;==&quot;R&quot; del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;</Command>
     </PreBuildEvent>
-    <ClCompile>
+    <ClCompile >
       <AdditionalOptions> /Zo /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
       <Optimization>MaxSpeed</Optimization>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;..\common;..\vmpi</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;EXENAME=vbsp;_DLL_EXT=.dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;MACRO_MATHLIB;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vbsp;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;EXENAME=vbsp;_DLL_EXT=.dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;MACRO_MATHLIB;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\vbsp;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -187,12 +171,12 @@ exit 1
       <ErrorReporting>Prompt</ErrorReporting>
       <BuildStlModules>false</BuildStlModules>
     </ClCompile>
-    <ResourceCompile>
+    <ResourceCompile >
       <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <Culture>1033</Culture>
     </ResourceCompile>
-    <PreLinkEvent />
-    <Link>
+    <PreLinkEvent  />
+    <Link >
       <AdditionalOptions>/NXCOMPAT /ignore:4221</AdditionalOptions>
       <AdditionalDependencies>;shell32.lib;user32.lib;advapi32.lib;gdi32.lib;comdlg32.lib;ole32.lib;ws2_32.lib;odbc32.lib;odbccp32.lib;winmm.lib</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
@@ -204,29 +188,27 @@ exit 1
       <SubSystem>Console</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
-      <BaseAddress>
-      </BaseAddress>
+      <BaseAddress> </BaseAddress>
       <TargetMachine>MachineX64</TargetMachine>
       <LinkErrorReporting>PromptImmediately</LinkErrorReporting>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
-    <Manifest>
+    <Manifest >
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Manifest>
-    <Xdcmake>
+    <Xdcmake >
       <SuppressStartupBanner>true</SuppressStartupBanner>
     </Xdcmake>
-    <Bscmake>
+    <Bscmake >
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <OutputFile>$(OutDir)/vbsp.bsc</OutputFile>
     </Bscmake>
-    <PostBuildEvent>
+    <PostBuildEvent >
       <Message>Publishing to ..\..\..\game\bin\x64</Message>
-      <Command>
-      </Command>
+      <Command>copy &quot;$(TargetDir)&quot;$(TargetFileName) ..\..\..\game\bin\x64\$(TargetFileName) &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;if exist &quot;$(TargetDir)&quot;$(TargetName).map copy &quot;$(TargetDir)&quot;$(TargetName).map ..\..\..\game\bin\x64\$(TargetName).map &gt;nul&#x0D;&#x0A;copy &quot;$(TargetDir)&quot;$(TargetName).pdb ..\..\..\game\bin\x64\$(TargetName).pdb &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;goto BuildEventOK&#x0D;&#x0A;:BuildEventFailed&#x0D;&#x0A;echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***&#x0D;&#x0A;del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;exit 1&#x0D;&#x0A;:BuildEventOK&#x0D;&#x0A;</Command>
     </PostBuildEvent>
-    <CustomBuildStep />
+    <CustomBuildStep  />
   </ItemDefinitionGroup>
   <ItemGroup>
     <Library Include="..\..\lib\public\x64\bitmap.lib" />

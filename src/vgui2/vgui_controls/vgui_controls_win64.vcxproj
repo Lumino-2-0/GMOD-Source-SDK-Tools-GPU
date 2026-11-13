@@ -62,7 +62,7 @@
       <AdditionalOptions> /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;generated_proto;..\..\thirdparty\protobuf-2.6.1\src;..\..\thirdparty;..\..\thirdparty\cef;generated_proto</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;LIBNAME=vgui_controls;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\vgui2\vgui_controls;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;LIBNAME=vgui_controls;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\vgui2\vgui_controls;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -119,7 +119,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;generated_proto;..\..\thirdparty\protobuf-2.6.1\src;..\..\thirdparty;..\..\thirdparty\cef;generated_proto</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;LIBNAME=vgui_controls;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\vgui2\vgui_controls;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;LIBNAME=vgui_controls;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\vgui2\vgui_controls;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>

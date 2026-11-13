@@ -1,4 +1,4 @@
-﻿//========= Copyright Valve Corporation, All rights reserved. ============//
+//========= Copyright Valve Corporation, All rights reserved. ============//
 //
 // Purpose: Defines and structures for the BSP file format.
 //
@@ -55,51 +55,62 @@
 
 #if !defined( BSP_USE_LESS_MEMORY )
 // Common limits
-// leaffaces, leafbrushes, planes, and verts are still bounded by
-// 16 bit short limits
-#define	MAX_MAP_MODELS					1024
-#define	MAX_MAP_BRUSHES					8192
-#define	MAX_MAP_ENTITIES				65536
-#define	MAX_MAP_TEXINFO					16384
-#define MAX_MAP_TEXDATA					8192
-#define MAX_MAP_DISPINFO				2048
+//
+// Limites relevees pour les cartes GMod modernes (les valeurs SDK 2013 d'origine
+// sont plus basses et faisaient corrompre les grosses cartes en silence).
+// Chaque limite est bornee par le FORMAT BSP lui-meme, c'est-a-dire la largeur
+// du type qui reference l'element sur disque :
+//   - index en unsigned short (planes, verts, faces, leaffaces, leafbrushes,
+//     brushes via leafbrushes) : 65536 maximum ;
+//   - index en short signe (texinfo, dispinfo) : 32767 maximum ;
+//   - index en int (edges, surfedges, nodes...) : bornes choisies larges.
+// Aller au-dela du format n'aurait aucun sens : le BSP ne pourrait pas
+// referencer les elements supplementaires. Le moteur peut avoir des limites
+// plus basses pour certains elements ; ces outils ne doivent jamais etre le
+// facteur limitant. Tout depassement est detecte a la lecture (bsplib.cpp).
+#define	MAX_MAP_MODELS					65536
+#define	MAX_MAP_BRUSHES					65536	// SDK : 8192
+#define	MAX_MAP_ENTITIES				65536	// SDK : 16384
+#define	MAX_MAP_TEXINFO					32767	// SDK : 12288 (index short)
+#define MAX_MAP_TEXDATA					32767	// SDK : 2048
+#define MAX_MAP_DISPINFO				32767	// SDK : 2048 (index short)
 #define MAX_MAP_DISP_VERTS				( MAX_MAP_DISPINFO * ((1<<MAX_MAP_DISP_POWER)+1) * ((1<<MAX_MAP_DISP_POWER)+1) )
 #define MAX_MAP_DISP_TRIS				( (1 << MAX_MAP_DISP_POWER) * (1 << MAX_MAP_DISP_POWER) * 2 )
 #define MAX_DISPVERTS					NUM_DISP_POWER_VERTS( MAX_MAP_DISP_POWER )
 #define MAX_DISPTRIS					NUM_DISP_POWER_TRIS( MAX_MAP_DISP_POWER )
 #define	MAX_MAP_AREAS					256
 #define MAX_MAP_AREA_BYTES				(MAX_MAP_AREAS/8)
-#define	MAX_MAP_AREAPORTALS				1024
+#define	MAX_MAP_AREAPORTALS				65536	// SDK : 1024
 // Planes come in pairs, thus an even number.
-#define	MAX_MAP_PLANES					65536
+#define	MAX_MAP_PLANES					65536	// index unsigned short
 #define	MAX_MAP_NODES					65536
-#define	MAX_MAP_BRUSHSIDES				65536
-#define	MAX_MAP_LEAFS					65536
-#define	MAX_MAP_VERTS					65536
-#define MAX_MAP_VERTNORMALS				256000
-#define MAX_MAP_VERTNORMALINDICES		256000
-#define	MAX_MAP_FACES					65536
-#define	MAX_MAP_LEAFFACES				65536
-#define	MAX_MAP_LEAFBRUSHES 			65536
+#define	MAX_MAP_BRUSHSIDES				262144	// SDK : 65536 (dbrush_t::firstside est un int)
+#define	MAX_MAP_LEAFS					262144
+#define	MAX_MAP_VERTS					65536	// index unsigned short (dedge_t)
+#define MAX_MAP_VERTNORMALS				1048576	// SDK : 256000
+#define MAX_MAP_VERTNORMALINDICES		1048576	// SDK : 256000
+#define	MAX_MAP_FACES					262144	// index unsigned short (leaffaces)
+#define	MAX_MAP_LEAFFACES				262144	// index unsigned short (firstleafface)
+#define	MAX_MAP_LEAFBRUSHES 			65536	// index unsigned short (firstleafbrush)
 #define	MAX_MAP_PORTALS					65536
 #define MAX_MAP_CLUSTERS				65536
-#define MAX_MAP_LEAFWATERDATA			32768
-#define MAX_MAP_PORTALVERTS				128000
-#define	MAX_MAP_EDGES					256000
-#define	MAX_MAP_SURFEDGES				512000
-#define	MAX_MAP_LIGHTING				0x1000000
-#define	MAX_MAP_VISIBILITY				0x1000000			// increased BSPVERSION 7
-#define	MAX_MAP_TEXTURES				1024
-#define MAX_MAP_WORLDLIGHTS				8192
-#define MAX_MAP_CUBEMAPSAMPLES			1024
-#define MAX_MAP_OVERLAYS				512 
-#define MAX_MAP_WATEROVERLAYS			16384
-#define MAX_MAP_TEXDATA_STRING_DATA		256000
-#define MAX_MAP_TEXDATA_STRING_TABLE	65536
+#define MAX_MAP_LEAFWATERDATA			32767	// index short (leafWaterDataID)
+#define MAX_MAP_PORTALVERTS				1048576	// SDK : 128000
+#define	MAX_MAP_EDGES					1048576	// SDK : 256000
+#define	MAX_MAP_SURFEDGES				2097152	// SDK : 512000
+#define	MAX_MAP_LIGHTING				0x4000000	// SDK : 0x1000000
+#define	MAX_MAP_VISIBILITY				0x4000000	// SDK : 0x1000000 (16 Mo -> 64 Mo)
+#define	MAX_MAP_TEXTURES				32767	// SDK : 1024
+#define MAX_MAP_WORLDLIGHTS				65536	// SDK : 8192
+#define MAX_MAP_CUBEMAPSAMPLES			65536	// SDK : 1024
+#define MAX_MAP_OVERLAYS				65536	// SDK : 512
+#define MAX_MAP_WATEROVERLAYS			65536	// SDK : 16384
+#define MAX_MAP_TEXDATA_STRING_DATA		4194304	// SDK : 256000
+#define MAX_MAP_TEXDATA_STRING_TABLE	262144
 // this is stuff for trilist/tristrips, etc.
-#define MAX_MAP_PRIMITIVES				32768
-#define MAX_MAP_PRIMVERTS				65536
-#define MAX_MAP_PRIMINDICES				65536
+#define MAX_MAP_PRIMITIVES				65536	// SDK : 32768
+#define MAX_MAP_PRIMVERTS				65536	// index unsigned short
+#define MAX_MAP_PRIMINDICES				1048576	// SDK : 65536
 
 #else
 
@@ -784,6 +795,7 @@ struct dfaceid_t
 	DECLARE_BYTESWAP_DATADESC();
 	unsigned short	hammerfaceid;
 };
+
 
 
 // NOTE: Only 7-bits stored!!!

@@ -118,6 +118,7 @@ public:
 
 	void StartRayTest( DispTested_t &dispTested );
 	void AddPolysForRayTrace( void );
+	void MarkDispLeaves( unsigned char *pLeafFlags );
 
 	// general timing -- should be moved!!
 	void StartTimer( const char *name );
@@ -299,6 +300,33 @@ void CVRadDispMgr::InsertDispIntoTree( int ndxDisp )
 }
 
 	
+class CMarkLeafEnum : public ISpatialLeafEnumerator
+{
+public:
+	bool EnumerateLeaf( int leaf, intp context )
+	{
+		( (unsigned char *)context )[leaf] = 1;
+		return true;
+	}
+};
+
+// Marque les feuilles BSP qui touchent la boite d'un displacement (meme test que l'insertion).
+void CVRadDispMgr::MarkDispLeaves( unsigned char *pLeafFlags )
+{
+	CMarkLeafEnum e;
+	for ( int i = 0; i < m_DispTrees.Size(); ++i )
+	{
+		Vector boxMin, boxMax;
+		m_DispTrees[i].m_pDispTree->GetBounds( boxMin, boxMax );
+		ToolBSPTree()->EnumerateLeavesInBox( boxMin, boxMax, &e, (intp)pLeafFlags );
+	}
+}
+
+void VradDisp_MarkLeaves( unsigned char *pLeafFlags )
+{
+	s_DispMgr.MarkDispLeaves( pLeafFlags );
+}
+
 //-----------------------------------------------------------------------------
 // Remove a displacement from the tree for collision
 //-----------------------------------------------------------------------------

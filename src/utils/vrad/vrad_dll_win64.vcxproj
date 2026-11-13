@@ -50,7 +50,7 @@
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</GenerateManifest>
     <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PostBuildEventUseInBuild>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">..\..\..\bin</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</IntDir>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.dll</TargetExt>
     <ExecutablePath Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ExecutablePath);$(Path)</ExecutablePath>
@@ -72,7 +72,7 @@ if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
       <AdditionalOptions>/Zm200 /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;..\common;..\vmpi;..\vmpi\mysql\mysqlpp\include;..\vmpi\mysql\include</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vrad_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;VRAD;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GMOD_APPSYSTEM_ABI;VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vrad_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;VRAD;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\vrad;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -150,8 +150,11 @@ exit 1
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <PreBuildEvent>
-      <Command>
-      </Command>
+      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f "delims=" %%A in ('attrib "..\..\..\game\bin\x64\$(TargetFileName)"') do set valveTmpIsReadOnly="%%A"
+set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%
+if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
+..\..\devtools\bin\vpc.exe -crc2 "vrad_dll_win64.vcxproj"
+</Command>
     </PreBuildEvent>
     <ClCompile>
       <AdditionalOptions>/Zm200 /Zo /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
@@ -160,7 +163,7 @@ exit 1
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;..\common;..\vmpi;..\vmpi\mysql\mysqlpp\include;..\vmpi\mysql\include</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vrad_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;VRAD;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vrad;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>GMOD_APPSYSTEM_ABI;VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vrad_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;VRAD;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\vrad;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -222,8 +225,19 @@ exit 1
     </Bscmake>
     <PostBuildEvent>
       <Message>Publishing to ..\..\..\game\bin\x64</Message>
-      <Command>
-      </Command>
+      <Command>if not exist "..\..\..\game\bin\x64" mkdir "..\..\..\game\bin\x64"
+copy "$(TargetDir)$(TargetFileName)" "..\..\..\game\bin\x64\$(TargetFileName)"
+if ERRORLEVEL 1 goto BuildEventFailed
+if exist "$(TargetDir)$(TargetName).map" copy "$(TargetDir)$(TargetName).map" ..\..\..\game\bin\x64\$(TargetName).map
+copy "$(TargetDir)$(TargetName).pdb" ..\..\..\game\bin\x64\$(TargetName).pdb
+if ERRORLEVEL 1 goto BuildEventFailed
+goto BuildEventOK
+:BuildEventFailed
+echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***
+del /q "$(TargetDir)$(TargetFileName)"
+exit 1
+:BuildEventOK
+</Command>
     </PostBuildEvent>
     <CustomBuildStep />
   </ItemDefinitionGroup>
@@ -232,10 +246,10 @@ exit 1
     <Library Include="..\..\lib\common\x64\2015\release\lzma.lib" />
     <Library Include="..\..\lib\public\x64\mathlib.lib" />
     <Library Include="..\..\lib\public\x64\raytrace.lib" />
-    <Library Include="..\..\lib\public\x64\tier0.lib" />
+    <Library Include="..\..\lib\gmod_x64\tier0.lib" />
     <Library Include="..\..\lib\public\x64\tier1.lib" />
     <Library Include="..\..\lib\public\x64\tier2.lib" />
-    <Library Include="..\..\lib\public\x64\vstdlib.lib" />
+    <Library Include="..\..\lib\gmod_x64\vstdlib.lib" />
     <Library Include="..\..\lib\public\x64\vtf.lib" />
   </ItemGroup>
   <ItemGroup>
@@ -373,6 +387,9 @@ exit 1
     <ClCompile Include="..\common\utilmatlib.cpp" />
     <ClCompile Include="vismat.cpp" />
     <ClCompile Include="vrad.cpp" />
+    <ClCompile Include="gmod_tier0_shim.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="VRAD_DispColl.cpp" />
     <ClCompile Include="VradDetailProps.cpp" />
     <ClCompile Include="VRadDisps.cpp" />
@@ -394,7 +411,6 @@ exit 1
     <ClCompile Include="..\..\public\ScratchPad3D.cpp" />
     <ClCompile Include="..\..\public\ScratchPadUtils.cpp" />
   </ItemGroup>
-  <ItemGroup />
   <ItemGroup />
   <ItemGroup>
     <None Include="notes.txt" />

@@ -1,0 +1,267 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectName>QC Eyes</ProjectName>
+    <ProjectGuid>{A4D0A120-7C78-A069-7599-7B2ADF29A77D}</ProjectGuid>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <TargetName>qc_eyes</TargetName>
+    <PlatformToolset>v143</PlatformToolset>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <CharacterSet>MultiByte</CharacterSet>
+    <TargetName>qc_eyes</TargetName>
+    <PlatformToolset>v143</PlatformToolset>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <PreferredToolArchitecture>x64</PreferredToolArchitecture>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Debug\x64\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Debug\x64\</IntDir>
+    <ExecutablePath Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ExecutablePath);$(Path)</ExecutablePath>
+    <PreBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PreBuildEventUseInBuild>
+    <PreLinkEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PreLinkEventUseInBuild>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
+    <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PostBuildEventUseInBuild>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</OutDir>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</IntDir>
+    <ExecutablePath Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ExecutablePath);$(Path)</ExecutablePath>
+    <PreBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</PreBuildEventUseInBuild>
+    <PreLinkEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</PreLinkEventUseInBuild>
+    <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
+    <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
+    <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</PostBuildEventUseInBuild>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <PreBuildEvent >
+      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f &quot;delims=&quot; %%A in (&apos;attrib &quot;..\..\..\game\bin\x64\$(TargetFileName)&quot;&apos;) do set valveTmpIsReadOnly=&quot;%%A&quot;&#x0D;&#x0A;set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%&#x0D;&#x0A;if &quot;%valveTmpIsReadOnlyLetter%&quot;==&quot;R&quot; del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;</Command>
+    </PreBuildEvent>
+    <ClCompile >
+      <AdditionalOptions> /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
+      <Optimization>Disabled</Optimization>
+      <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_WINDOWS;_LIB;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;EXENAME=qc_eyes;_DLL_EXT=.dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;NO_WARN_MBCS_MFC_DEPRECATION;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\qc_eyes;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <StringPooling>true</StringPooling>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+      <ForceConformanceInForLoopScope>true</ForceConformanceInForLoopScope>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <OpenMPSupport>false</OpenMPSupport>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderOutputFile>$(IntDir)/QC_Eyes.pch</PrecompiledHeaderOutputFile>
+      <ExpandAttributedSource>false</ExpandAttributedSource>
+      <AssemblerOutput>NoListing</AssemblerOutput>
+      <AssemblerListingLocation>$(IntDir)/</AssemblerListingLocation>
+      <ObjectFileName>$(IntDir)/</ObjectFileName>
+      <ProgramDataBaseFileName>$(IntDir)/</ProgramDataBaseFileName>
+      <BrowseInformation>false</BrowseInformation>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <UseFullPaths>true</UseFullPaths>
+      <DisableSpecificWarnings>;4316;5033;5054;5055;4577;4091;4355</DisableSpecificWarnings>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <BrowseInformationFile>$(IntDir)/</BrowseInformationFile>
+      <ErrorReporting>Prompt</ErrorReporting>
+      <BuildStlModules>false</BuildStlModules>
+    </ClCompile>
+    <ResourceCompile >
+      <PreprocessorDefinitions>_DEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Culture>1033</Culture>
+    </ResourceCompile>
+    <PreLinkEvent  />
+    <Link >
+      <AdditionalOptions>/NXCOMPAT /ignore:4221</AdditionalOptions>
+      <AdditionalDependencies>;shell32.lib;user32.lib;advapi32.lib;gdi32.lib;comdlg32.lib;ole32.lib;windowscodecs.lib</AdditionalDependencies>
+      <ShowProgress>NotSet</ShowProgress>
+      <OutputFile>$(OutDir)\qc_eyes.exe</OutputFile>
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+      <IgnoreSpecificDefaultLibraries>libc;libcd;libcmt;libcpmt;libcpmt1</IgnoreSpecificDefaultLibraries>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <ProgramDatabaseFile>$(IntDir)/$(TargetName).pdb</ProgramDatabaseFile>
+      <SubSystem>Windows</SubSystem>
+      <BaseAddress> </BaseAddress>
+      <TargetMachine>MachineX64</TargetMachine>
+      <LinkErrorReporting>PromptImmediately</LinkErrorReporting>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+    </Link>
+    <Manifest >
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+    </Manifest>
+    <Xdcmake >
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+    </Xdcmake>
+    <Bscmake >
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+      <OutputFile>$(OutDir)/qc_eyes.bsc</OutputFile>
+    </Bscmake>
+    <PostBuildEvent >
+      <Message>Publishing to ..\..\..\game\bin\x64</Message>
+      <Command>copy &quot;$(TargetDir)&quot;$(TargetFileName) ..\..\..\game\bin\x64\$(TargetFileName) &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;if exist &quot;$(TargetDir)&quot;$(TargetName).map copy &quot;$(TargetDir)&quot;$(TargetName).map ..\..\..\game\bin\x64\$(TargetName).map &gt;nul&#x0D;&#x0A;copy &quot;$(TargetDir)&quot;$(TargetName).pdb ..\..\..\game\bin\x64\$(TargetName).pdb &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;goto BuildEventOK&#x0D;&#x0A;:BuildEventFailed&#x0D;&#x0A;echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***&#x0D;&#x0A;del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;exit 1&#x0D;&#x0A;:BuildEventOK&#x0D;&#x0A;</Command>
+    </PostBuildEvent>
+    <CustomBuildStep  />
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <PreBuildEvent >
+      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f &quot;delims=&quot; %%A in (&apos;attrib &quot;..\..\..\game\bin\x64\$(TargetFileName)&quot;&apos;) do set valveTmpIsReadOnly=&quot;%%A&quot;&#x0D;&#x0A;set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%&#x0D;&#x0A;if &quot;%valveTmpIsReadOnlyLetter%&quot;==&quot;R&quot; del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;</Command>
+    </PreBuildEvent>
+    <ClCompile >
+      <AdditionalOptions> /Zo /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
+      <Optimization>MaxSpeed</Optimization>
+      <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+      <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;EXENAME=qc_eyes;_DLL_EXT=.dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;NO_WARN_MBCS_MFC_DEPRECATION;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\qc_eyes;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <StringPooling>true</StringPooling>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
+      <ForceConformanceInForLoopScope>true</ForceConformanceInForLoopScope>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+      <OpenMPSupport>false</OpenMPSupport>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderOutputFile>$(IntDir)/QC_Eyes.pch</PrecompiledHeaderOutputFile>
+      <ExpandAttributedSource>false</ExpandAttributedSource>
+      <AssemblerOutput>NoListing</AssemblerOutput>
+      <AssemblerListingLocation>$(IntDir)/</AssemblerListingLocation>
+      <ObjectFileName>$(IntDir)/</ObjectFileName>
+      <ProgramDataBaseFileName>$(IntDir)/</ProgramDataBaseFileName>
+      <BrowseInformation>false</BrowseInformation>
+      <WarningLevel>Level4</WarningLevel>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <CompileAs>CompileAsCpp</CompileAs>
+      <UseFullPaths>true</UseFullPaths>
+      <DisableSpecificWarnings>;4316;5033;5054;5055;4577;4091;4355</DisableSpecificWarnings>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <BrowseInformationFile>$(IntDir)/</BrowseInformationFile>
+      <ErrorReporting>Prompt</ErrorReporting>
+      <BuildStlModules>false</BuildStlModules>
+    </ClCompile>
+    <ResourceCompile >
+      <PreprocessorDefinitions>NDEBUG;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Culture>1033</Culture>
+    </ResourceCompile>
+    <PreLinkEvent  />
+    <Link >
+      <AdditionalOptions>/NXCOMPAT /ignore:4221</AdditionalOptions>
+      <AdditionalDependencies>;shell32.lib;user32.lib;advapi32.lib;gdi32.lib;comdlg32.lib;ole32.lib;windowscodecs.lib</AdditionalDependencies>
+      <ShowProgress>NotSet</ShowProgress>
+      <OutputFile>$(OutDir)\qc_eyes.exe</OutputFile>
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+      <IgnoreSpecificDefaultLibraries>libc;libcd;libcmtd;libcpmtd;libcpmtd0;libcpmtd1</IgnoreSpecificDefaultLibraries>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <ProgramDatabaseFile>$(IntDir)/$(TargetName).pdb</ProgramDatabaseFile>
+      <SubSystem>Windows</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>false</EnableCOMDATFolding>
+      <BaseAddress> </BaseAddress>
+      <TargetMachine>MachineX64</TargetMachine>
+      <LinkErrorReporting>PromptImmediately</LinkErrorReporting>
+      <RandomizedBaseAddress>false</RandomizedBaseAddress>
+      <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+    </Link>
+    <Manifest >
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+    </Manifest>
+    <Xdcmake >
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+    </Xdcmake>
+    <Bscmake >
+      <SuppressStartupBanner>true</SuppressStartupBanner>
+      <OutputFile>$(OutDir)/qc_eyes.bsc</OutputFile>
+    </Bscmake>
+    <PostBuildEvent >
+      <Message>Publishing to ..\..\..\game\bin\x64</Message>
+      <Command>copy &quot;$(TargetDir)&quot;$(TargetFileName) ..\..\..\game\bin\x64\$(TargetFileName) &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;if exist &quot;$(TargetDir)&quot;$(TargetName).map copy &quot;$(TargetDir)&quot;$(TargetName).map ..\..\..\game\bin\x64\$(TargetName).map &gt;nul&#x0D;&#x0A;copy &quot;$(TargetDir)&quot;$(TargetName).pdb ..\..\..\game\bin\x64\$(TargetName).pdb &gt;nul&#x0D;&#x0A;if ERRORLEVEL 1 goto BuildEventFailed&#x0D;&#x0A;goto BuildEventOK&#x0D;&#x0A;:BuildEventFailed&#x0D;&#x0A;echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***&#x0D;&#x0A;del /q &quot;$(TargetDir)&quot;$(TargetFileName)&#x0D;&#x0A;exit 1&#x0D;&#x0A;:BuildEventOK&#x0D;&#x0A;</Command>
+    </PostBuildEvent>
+    <CustomBuildStep  />
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Library Include="..\..\lib\public\x64\tier0.lib" />
+    <Library Include="..\..\lib\public\x64\tier1.lib" />
+    <Library Include="..\..\lib\public\x64\vstdlib.lib" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="QC_Eyes.h" />
+    <ClInclude Include="QC_EyesDlg.h" />
+    <ClInclude Include="Resource.h" />
+    <ClInclude Include="StdAfx.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="QC_Eyes.cpp" />
+    <ClCompile Include="QC_EyesDlg.cpp" />
+    <ClCompile Include="StdAfx.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="QC_Eyes.rc" />
+  </ItemGroup>
+  <ItemGroup />
+  <ItemGroup>
+    <None Include="res\eye_default.bmp" />
+    <None Include="res\eye_lower_hi.bmp" />
+    <None Include="res\eye_lower_lo.bmp" />
+    <None Include="res\eye_lower_mid.bmp" />
+    <None Include="res\eye_upper_hi.bmp" />
+    <None Include="res\eye_upper_lo.bmp" />
+    <None Include="res\eye_upper_mid.bmp" />
+    <None Include="res\eye_XY_L.bmp" />
+    <None Include="res\eye_XY_R.bmp" />
+    <None Include="res\eye_Z_L.bmp" />
+    <None Include="res\eye_Z_R.bmp" />
+    <None Include="res\QC_Eyes.ico" />
+    <None Include="res\QC_Eyes.rc2" />
+    <None Include="..\..\vpc_scripts\loadaddress.vpc" />
+    <None Include="_vpc_\manifest_qc_eyes\win64\manifest.txt" />
+    <None Include="..\..\vpc_scripts\platform_dirs.vpc" />
+    <None Include="qc_eyes.vpc" />
+    <None Include="..\..\vpc_scripts\source_base.vpc" />
+    <None Include="..\..\vpc_scripts\source_exe_base.vpc" />
+    <None Include="..\..\vpc_scripts\source_exe_win_win32_base.vpc" />
+    <None Include="..\..\vpc_scripts\source_exe_win_win32_debug.vpc" />
+    <None Include="..\..\vpc_scripts\source_exe_win_win32_release.vpc" />
+    <None Include="..\..\vpc_scripts\source_video_base.vpc" />
+    <None Include="..\..\vpc_scripts\source_win32_base.vpc" />
+    <None Include="..\..\vpc_scripts\version.vpc" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

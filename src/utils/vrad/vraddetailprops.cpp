@@ -10,6 +10,7 @@
 //=============================================================================//
 
 #include "vrad.h"
+#include "vrad_gpu.h"
 #include "Bsplib.h"
 #include "GameBSPFile.h"
 #include "UtlBuffer.h"
@@ -652,12 +653,135 @@ static void ComputeAmbientLightingAtPoint( int iThread, const Vector &origin, Ve
 }
 
 //-----------------------------------------------------------------------------
+// Version par lot (un seul appel GPU pour tous les sommets d'un prop).
+// Memes echantillons et meme ordre que ComputeIndirectLightingAtPoint ;
+// pValid[i] = false si un rayon doit etre refait sur le CPU.
+//-----------------------------------------------------------------------------
+bool ComputeIndirectLightingBatchGPU( const Vector *pPos, const Vector *pNormal, int n,
+									  bool force_fast, bool bIgnoreNormals, Vector *pOut, bool *pValid )
+{
+	if ( !g_bUseCUDA || !g_bIndirectGPU || n <= 0 )
+		return false;
+
+	int nS = NUMVERTEXNORMALS;
+	if ( do_fast || force_fast )
+		nS /= 4;
+	else
+		nS *= g_flSkySampleScale;
+
+	static __declspec( thread ) CUtlVector<float> *s_pRays = NULL;
+	static __declspec( thread ) CUtlVector<float> *s_pOut = NULL;
+	static __declspec( thread ) CUtlVector<int> *s_pStart = NULL;
+	static __declspec( thread ) CUtlVector<float> *s_pDot = NULL;
+	if ( !s_pRays ) { s_pRays = new CUtlVector<float>; s_pOut = new CUtlVector<float>; s_pStart = new CUtlVector<int>; s_pDot = new CUtlVector<float>; }
+	s_pRays->RemoveAll();
+	s_pStart->RemoveAll();
+	s_pDot->RemoveAll();
+
+	for ( int i = 0; i < n; ++i )
+	{
+		s_pStart->AddToTail( s_pRays->Count() / 6 );
+		float totalDotG = 0;
+		DirectionalSampler_t samplerG;
+		for ( int j = 0; j < nS; j++ )
+		{
+			Vector sn = samplerG.NextValue();
+			float dotG = bIgnoreNormals ? (0.7071/2) : DotProduct( pNormal[i], sn );
+			if ( dotG <= EQUAL_EPSILON )
+				continue;
+			totalDotG += dotG;
+			Vector vE;
+			VectorScale( sn, MAX_TRACE_LENGTH, vE );
+			s_pRays->AddToTail( pPos[i].x ); s_pRays->AddToTail( pPos[i].y ); s_pRays->AddToTail( pPos[i].z );
+			s_pRays->AddToTail( vE.x ); s_pRays->AddToTail( vE.y ); s_pRays->AddToTail( vE.z );
+		}
+		s_pDot->AddToTail( totalDotG );
+	}
+	s_pStart->AddToTail( s_pRays->Count() / 6 );
+
+	int nR = s_pRays->Count() / 6;
+	s_pOut->SetCount( nR * 4 > 0 ? nR * 4 : 4 );
+	if ( nR > 0 && !VradGPU_Indirect( s_pRays->Base(), nR, s_pOut->Base() ) )
+		return false;
+
+	for ( int i = 0; i < n; ++i )
+	{
+		bool ok = true;
+		Vector acc( 0, 0, 0 );
+		for ( int r = (*s_pStart)[i]; r < (*s_pStart)[i + 1]; ++r )
+		{
+			const float *o = s_pOut->Base() + r * 4;
+			if ( o[3] == 2.0f ) { ok = false; break; }
+			if ( o[3] == 1.0f ) { acc.x += o[0]; acc.y += o[1]; acc.z += o[2]; }
+		}
+		pValid[i] = ok;
+		if ( ok )
+		{
+			float d = (*s_pDot)[i];
+			if ( d )
+				VectorScale( acc, 1.0f / d, acc );
+			pOut[i] = acc;
+		}
+	}
+	return true;
+}
+
+//-----------------------------------------------------------------------------
 // Trace hemispherical rays from a vertex, accumulating indirect
 // sources at each ray termination.
 //-----------------------------------------------------------------------------
 void ComputeIndirectLightingAtPoint( Vector &position, Vector &normal, Vector &outColor,
 									 int iThread, bool force_fast, bool bIgnoreNormals )
 {
+	if ( g_bUseCUDA && g_bIndirectGPU )
+	{
+		int nS = NUMVERTEXNORMALS;
+		if ( do_fast || force_fast )
+			nS /= 4;
+		else
+			nS *= g_flSkySampleScale;
+
+		static __declspec( thread ) CUtlVector<float> *s_pRays = NULL;
+		static __declspec( thread ) CUtlVector<float> *s_pOut = NULL;
+		if ( !s_pRays ) { s_pRays = new CUtlVector<float>; s_pOut = new CUtlVector<float>; }
+		s_pRays->RemoveAll();
+
+		float totalDotG = 0;
+		DirectionalSampler_t samplerG;
+		for ( int j = 0; j < nS; j++ )
+		{
+			Vector sn = samplerG.NextValue();
+			float dotG = bIgnoreNormals ? (0.7071/2) : DotProduct( normal, sn );
+			if ( dotG <= EQUAL_EPSILON )
+				continue;
+			totalDotG += dotG;
+			Vector vE;
+			VectorScale( sn, MAX_TRACE_LENGTH, vE );
+			s_pRays->AddToTail( position.x ); s_pRays->AddToTail( position.y ); s_pRays->AddToTail( position.z );
+			s_pRays->AddToTail( vE.x ); s_pRays->AddToTail( vE.y ); s_pRays->AddToTail( vE.z );
+		}
+		int nR = s_pRays->Count() / 6;
+		s_pOut->SetCount( nR * 4 );
+		if ( nR == 0 || VradGPU_Indirect( s_pRays->Base(), nR, s_pOut->Base() ) )
+		{
+			bool anyFallback = false;
+			Vector acc( 0, 0, 0 );
+			for ( int r = 0; r < nR; ++r )
+			{
+				const float *o = s_pOut->Base() + r * 4;
+				if ( o[3] == 2.0f ) { anyFallback = true; break; }
+				if ( o[3] == 1.0f ) { acc.x += o[0]; acc.y += o[1]; acc.z += o[2]; }
+			}
+			if ( !anyFallback )
+			{
+				outColor = acc;
+				if ( totalDotG )
+					VectorScale( outColor, 1.0f / totalDotG, outColor );
+				return;
+			}
+		}
+	}
+
 	Ray_t			ray;
 	CLightSurface	surfEnum(iThread);
 

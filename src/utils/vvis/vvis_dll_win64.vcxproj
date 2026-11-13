@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -11,7 +11,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectName>vvis_GPU</ProjectName>
+    <ProjectName>VVIS</ProjectName>
     <ProjectGuid>{ECB8B679-3CDD-8136-F54C-E23F014C6D10}</ProjectGuid>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -24,36 +24,36 @@
     <PreferredToolArchitecture>x64</PreferredToolArchitecture>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>MultiByte</CharacterSet>
-    <TargetName>vvis_GPU</TargetName>
+    <TargetName>vvis_dll</TargetName>
     <PlatformToolset>v143</PlatformToolset>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <PreferredToolArchitecture>x64</PreferredToolArchitecture>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-  <ImportGroup Label="ExtensionSettings">
-  </ImportGroup>
-  <PropertyGroup Label="UserMacros">
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Debug\x64\</OutDir>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">..\..\..\VVIS_Bin</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Debug\x64\</IntDir>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.dll</TargetExt>
     <ExecutablePath Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ExecutablePath);$(Path)</ExecutablePath>
-    <PreBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PreBuildEventUseInBuild>
-    <PreLinkEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PreLinkEventUseInBuild>
+    <PreBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</PreBuildEventUseInBuild>
+    <PreLinkEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</PreLinkEventUseInBuild>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</GenerateManifest>
-    <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</PostBuildEventUseInBuild>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">..\..\..\bin\</OutDir>
+    <PostBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</PostBuildEventUseInBuild>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">..\..\..\VVIS_Bin</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Release\x64\</IntDir>
-    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
+    <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.dll</TargetExt>
     <ExecutablePath Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ExecutablePath);$(Path)</ExecutablePath>
     <PreBuildEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</PreBuildEventUseInBuild>
     <PreLinkEventUseInBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</PreLinkEventUseInBuild>
@@ -63,17 +63,14 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PreBuildEvent>
-      <Command>if EXIST ..\..\..\game\bin\x64\$(TargetFileName) for /f "delims=" %%A in ('attrib "..\..\..\game\bin\x64\$(TargetFileName)"') do set valveTmpIsReadOnly="%%A"
-set valveTmpIsReadOnlyLetter=%valveTmpIsReadOnly:~6,1%
-if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
-..\..\devtools\bin\vpc.exe -crc2 "vvis_dll_win64.vcxproj"
-</Command>
+      <Command>
+      </Command>
     </PreBuildEvent>
     <ClCompile>
       <AdditionalOptions>/Zm200 /Gw /Zc:inline /Zc:threadSafeInit- /Wv:18 /Zc:__cplusplus</AdditionalOptions>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;..\common;..\vmpi;..\vmpi\mysql\include</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vvis_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vvis;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;_DEBUG;DEBUG;VVIS_BUILD_AS_DLL;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_SCL_SECURE_NO_WARNINGS;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vvis_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\vvis;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -133,19 +130,8 @@ if "%valveTmpIsReadOnlyLetter%"=="R" del /q "$(TargetDir)"$(TargetFileName)
     </Bscmake>
     <PostBuildEvent>
       <Message>Publishing to ..\..\..\game\bin\x64</Message>
-      <Command>if not exist "..\..\..\game\bin\x64" mkdir "..\..\..\game\bin\x64"
-copy "$(TargetDir)$(TargetFileName)" "..\..\..\game\bin\x64\$(TargetFileName)"
-if ERRORLEVEL 1 goto BuildEventFailed
-if exist "$(TargetDir)$(TargetName).map" copy "$(TargetDir)$(TargetName).map" ..\..\..\game\bin\x64\$(TargetName).map
-copy "$(TargetDir)$(TargetName).pdb" ..\..\..\game\bin\x64\$(TargetName).pdb
-if ERRORLEVEL 1 goto BuildEventFailed
-goto BuildEventOK
-:BuildEventFailed
-echo *** ERROR! PostBuildStep FAILED for $(ProjectName)! EXE or DLL is probably running. ***
-del /q "$(TargetDir)$(TargetFileName)"
-exit 1
-:BuildEventOK
-</Command>
+      <Command>
+      </Command>
     </PostBuildEvent>
     <CustomBuildStep />
   </ItemDefinitionGroup>
@@ -161,7 +147,7 @@ exit 1
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <AdditionalIncludeDirectories>..\..\common;..\..\public;..\..\public\tier0;..\..\public\tier1;..\common;..\vmpi;..\vmpi\mysql\include</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vvis_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR="C:\Users\lumin\Desktop\SourceSDK2013-64-ficool\src\utils\vvis";VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VPC;SOURCESDK;SOURCE_HAS_FREETYPE;WIN32;_WIN32;NDEBUG;VVIS_BUILD_AS_DLL;_WINDOWS;_USRDLL;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_DEPRECATE;_ALLOW_RUNTIME_LIBRARY_MISMATCH;_ALLOW_ITERATOR_DEBUG_LEVEL_MISMATCH;_ALLOW_MSC_VER_MISMATCH;%(PreprocessorDefinitions);PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;PLATFORM_64BITS;WIN64;_WIN64;COMPILER_MSVC64;COMPILER_MSVC;_DLL_EXT=.dll;DLLNAME=vvis_dll;DEV_BUILD;FRAME_POINTER_OMISSION_DISABLED;PROTECTED_THINGS_DISABLE;_DLL_EXT=.dll;_DLL_PREFIX=;_EXTERNAL_DLL_EXT=.dll;PROJECTDIR=C:\Users\lumin\Desktop\GitHub\GMOD-Source-SDK-Tools-GPU_CUDA\src\utils\vvis;VPCGAME=valve;VPCGAMECAPS=VALVE</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <ExceptionHandling>false</ExceptionHandling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -176,7 +162,7 @@ exit 1
       <ProgramDataBaseFileName>$(IntDir)/</ProgramDataBaseFileName>
       <GenerateXMLDocumentationFiles>false</GenerateXMLDocumentationFiles>
       <BrowseInformation>false</BrowseInformation>
-      <WarningLevel>Level1</WarningLevel>
+      <WarningLevel>Level4</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <CompileAs>CompileAsCpp</CompileAs>
       <UseFullPaths>true</UseFullPaths>
@@ -193,15 +179,15 @@ exit 1
     <PreLinkEvent />
     <Link>
       <AdditionalOptions> /ignore:4221</AdditionalOptions>
-      <AdditionalDependencies>shell32.lib;user32.lib;advapi32.lib;gdi32.lib;comdlg32.lib;ole32.lib;odbc32.lib;odbccp32.lib;ws2_32.lib;OpenCL.lib</AdditionalDependencies>
+      <AdditionalDependencies>;shell32.lib;user32.lib;advapi32.lib;gdi32.lib;comdlg32.lib;ole32.lib;odbc32.lib;odbccp32.lib;ws2_32.lib</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
-      <OutputFile>..\..\..\bin\vvis_GPU.exe</OutputFile>
+      <OutputFile>$(OutDir)\vvis_dll.dll</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>..\..\lib\common\x64\2015\release;..\..\lib\public\x64</AdditionalLibraryDirectories>
       <IgnoreSpecificDefaultLibraries>libc;libcd;libcmtd;libcpmtd;libcpmtd0;libcpmtd1</IgnoreSpecificDefaultLibraries>
       <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
       <ProgramDatabaseFile>$(IntDir)/$(TargetName).pdb</ProgramDatabaseFile>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>false</EnableCOMDATFolding>
       <BaseAddress>
@@ -219,7 +205,7 @@ exit 1
     </Xdcmake>
     <Bscmake>
       <SuppressStartupBanner>true</SuppressStartupBanner>
-      <OutputFile>$(OutDir)/vvis_GPU.blc</OutputFile>
+      <OutputFile>$(OutDir)/vvis_dll.bsc</OutputFile>
     </Bscmake>
     <PostBuildEvent>
       <Message>Publishing to ..\..\..\game\bin\x64</Message>
@@ -231,7 +217,6 @@ exit 1
   <ItemGroup>
     <Library Include="..\..\lib\common\x64\2015\release\lzma.lib" />
     <Library Include="..\..\lib\public\x64\mathlib.lib" />
-    <Library Include="..\..\lib\public\x64\OpenCL.lib" />
     <Library Include="..\..\lib\public\x64\tier0.lib" />
     <Library Include="..\..\lib\public\x64\tier1.lib" />
     <Library Include="..\..\lib\public\x64\tier2.lib" />
@@ -275,6 +260,8 @@ exit 1
     <ClInclude Include="..\common\tools_minidump.h" />
   </ItemGroup>
   <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="..\common\bsplib.cpp" />
     <ClCompile Include="..\common\cmdlib.cpp" />
     <ClCompile Include="..\..\public\collisionutils.cpp" />
@@ -292,14 +279,18 @@ exit 1
     <ClCompile Include="..\common\threads.cpp" />
     <ClCompile Include="..\common\tools_minidump.cpp" />
     <ClCompile Include="vvis.cpp" />
+    <ClCompile Include="flow_gpu_host.cpp" />
     <ClCompile Include="WaterDist.cpp" />
     <ClCompile Include="..\..\public\zip_utils.cpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup />
   <ItemGroup>
+    <None Include="..\..\..\..\..\..\..\..\MAP_SERVEUR\Kindercity\Gm_Kindercity_Night\gm_kindercity_night.vmf" />
     <None Include="..\..\vpc_scripts\loadaddress.vpc" />
-    <None Include="kernel_test(no_compiled).cl" />
+    <ClInclude Include="flow_gpu_kernel.h" />
+    <None Include="build_ptx.ps1" />
+    <None Include="flow_gpu_kernel.cu" />
     <None Include="_vpc_\manifest_vvis_dll\win64\manifest.txt" />
     <None Include="..\..\vpc_scripts\platform_dirs.vpc" />
     <None Include="..\..\vpc_scripts\source_base.vpc" />

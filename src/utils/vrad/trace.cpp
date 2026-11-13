@@ -10,6 +10,7 @@
 //=============================================================================
 
 #include "vrad.h"
+#include "vrad_gpu.h"
 #include "trace.h"
 #include "Cmodel.h"
 #include "mathlib/vmatrix.h"
@@ -149,8 +150,55 @@ public:
 };
 
 void TestLine( const FourVectors& start, const FourVectors& stop,
-               fltx4 *pFractionVisible, int static_prop_index_to_ignore )
+			   fltx4 *pFractionVisible, int static_prop_index_to_ignore )
 {
+	// Lumiere directe CUDA : enregistrement puis rejeu des rayons d'ombre par face.
+	bool haveGpu = false;
+	float gpuVis[4] = { 1, 1, 1, 1 };
+	VradRayQueue_t *q = g_pRayQueue;
+	if ( q && static_prop_index_to_ignore == -1 )
+	{
+		float cur[24];
+		for ( int l = 0; l < 4; l++ )
+		{
+			Vector a = start.Vec( l ), b = stop.Vec( l );
+			cur[l * 6 + 0] = a.x; cur[l * 6 + 1] = a.y; cur[l * 6 + 2] = a.z;
+			cur[l * 6 + 3] = b.x; cur[l * 6 + 4] = b.y; cur[l * 6 + 5] = b.z;
+		}
+		if ( q->mode == 1 )
+		{
+			q->rays.AddMultipleToTail( 24, cur );
+			*pFractionVisible = Four_Ones;
+			return;
+		}
+		if ( q->mode == 2 )
+		{
+			int base = q->pos * 24;
+			q->pos++;
+			if ( base + 24 <= q->rays.Count() && memcmp( q->rays.Base() + base, cur, sizeof( cur ) ) == 0 )
+			{
+				bool needCpu = false;
+				for ( int l = 0; l < 4; l++ )
+				{
+					unsigned char r = q->res[q->pos * 4 - 4 + l];
+					if ( r == 2 ) needCpu = true;
+					gpuVis[l] = r ? 1.0f : 0.0f;
+				}
+				if ( !needCpu )
+				{
+					haveGpu = true;
+					if ( !g_bCUDAVerify )
+					{
+						*pFractionVisible = LoadUnalignedSIMD( gpuVis );
+						return;
+					}
+				}
+			}
+			if ( !haveGpu )
+				q->misses++;
+		}
+	}
+
 	FourRays myrays;
 	myrays.origin = start;
 	myrays.direction = stop;
@@ -169,7 +217,7 @@ void TestLine( const FourVectors& start, const FourVectors& stop,
 	{
 		visibility[i] = 1.0f;
 		if ( ( rt_result.HitIds[i] != -1 ) &&
-		     ( rt_result.HitDistance.m128_f32[i] < len.m128_f32[i] ) )
+			 ( rt_result.HitDistance.m128_f32[i] < len.m128_f32[i] ) )
 		{
 			visibility[i] = 0.0f;
 		}
@@ -177,6 +225,14 @@ void TestLine( const FourVectors& start, const FourVectors& stop,
 	*pFractionVisible = LoadUnalignedSIMD( visibility );
 	if ( g_bTextureShadows )
 		*pFractionVisible = MinSIMD( *pFractionVisible, coverageCallback.GetFractionVisible() );
+
+	if ( haveGpu )
+	{
+		int bad = 0;
+		for ( int l = 0; l < 4; l++ )
+			bad += ( ( visibility[l] > 0.5f ) != ( gpuVis[l] > 0.5f ) );
+		VradGPU_AddVerifyStats( 4, bad );
+	}
 }
 
 

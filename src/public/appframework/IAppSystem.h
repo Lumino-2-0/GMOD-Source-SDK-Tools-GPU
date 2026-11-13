@@ -47,6 +47,15 @@ public:
 	// Init, shutdown
 	virtual InitReturnVal_t Init() = 0;
 	virtual void Shutdown() = 0;
+#ifdef GMOD_APPSYSTEM_ABI
+	// Garry's Mod's newer IAppSystem has 4 more slots after Shutdown
+	// (measured from filesystem_stdio.dll's vtable). Non-pure so existing
+	// implementers keep compiling.
+	virtual const void *GMod_GetDependencies() { return NULL; }
+	virtual int GMod_GetTier() { return 4; }
+	virtual void GMod_Reconnect() {}
+	virtual bool GMod_IsSingleton() { return true; }
+#endif
 };
 
 

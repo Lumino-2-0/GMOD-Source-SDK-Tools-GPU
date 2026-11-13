@@ -1,0 +1,13 @@
+"vpc_cache"
+{
+	"CacheVersion"		"1"
+	"win64"
+	{
+		"CRCFile"		"glview_win64.vcxproj.vpc_crc"
+		"OutputFiles"
+		{
+			"0"		"glview_win64.vcxproj"
+			"1"		"glview_win64.vcxproj.filters"
+		}
+	}
+}

@@ -11,7 +11,6 @@
 #elif _LINUX
 #include <unistd.h>
 #endif
-
 #include <stdio.h>
 #include <sys/stat.h>
 #include "tier1/strtools.h"
@@ -19,7 +18,6 @@
 #include "tier0/icommandline.h"
 #include "KeyValues.h"
 #include "tier2/tier2.h"
-
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include <tier0/memdbgon.h>
@@ -142,39 +140,12 @@ bool FileSystem_Init( const char *pBSPFilename, int maxMemoryUsage, FSInitType_t
 {
 	Assert( CommandLine()->GetCmdLine() != NULL ); // Should have called CreateCmdLine by now.
 
-	// If this app uses VMPI, then let VMPI intercept all filesystem calls.
-#if defined( MPI )
-	if ( g_bUseMPI )
-	{
-		if ( g_bMPIMaster )
-		{
-			if ( !FileSystem_Init_Normal( pBSPFilename, initType, bOnlyUseFilename ) )
-				return false;
-
-			g_pFileSystem = g_pFullFileSystem = VMPI_FileSystem_Init( maxMemoryUsage, g_pFullFileSystem );
-			SendQDirInfo();
-		}
-		else
-		{
-			g_pFileSystem = g_pFullFileSystem = VMPI_FileSystem_Init( maxMemoryUsage, NULL );
-			RecvQDirInfo();
-		}
-		return true;
-	}
-#endif
-
 	return FileSystem_Init_Normal( pBSPFilename, initType, bOnlyUseFilename );
 }
 
 
 void FileSystem_Term()
 {
-#if defined( MPI )
-	if ( g_bUseMPI )
-	{
-		g_pFileSystem = g_pFullFileSystem = VMPI_FileSystem_Term();
-	}
-#endif
 
 	if ( g_pFullFileSystem )
 	{
@@ -193,9 +164,5 @@ void FileSystem_Term()
 
 CreateInterfaceFn FileSystem_GetFactory()
 {
-#if defined( MPI )
-	if ( g_bUseMPI )
-		return VMPI_FileSystem_GetFactory();
-#endif
 	return Sys_GetFactory( g_pFullFileSystemModule );
 }

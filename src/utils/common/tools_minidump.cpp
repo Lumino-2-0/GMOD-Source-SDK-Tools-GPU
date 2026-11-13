@@ -20,7 +20,7 @@ static ToolsExceptionHandler g_pCustomExceptionHandler = NULL;
 
 static LONG __stdcall ToolsExceptionFilter( struct _EXCEPTION_POINTERS *ExceptionInfo )
 {
-	// Non VMPI workers write a minidump and show a crash dialog like normal.
+	
 	int iType = MiniDumpNormal;
 	if ( g_bToolsWriteFullMinidumps )
 		iType = MiniDumpWithDataSegs | MiniDumpWithIndirectlyReferencedMemory;

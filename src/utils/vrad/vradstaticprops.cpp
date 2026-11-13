@@ -10,6 +10,7 @@
 //=============================================================================//
 
 #include "vrad.h"
+#include "vrad_gpu.h"
 #include "mathlib/vector.h"
 #include "UtlBuffer.h"
 #include "utlvector.h"
@@ -285,6 +286,7 @@ private:
 	{
 		vcollide_t		m_loadedModel;
 		CPhysCollide*	m_pModel;
+		char			m_ModelName[STATIC_PROP_NAME_LENGTH];
 		Vector			m_Mins;			// Bounding box is in local coordinates
 		Vector			m_Maxs;
 		studiohdr_t*	m_pStudioHdr;
@@ -334,6 +336,7 @@ private:
 	// The list of all static props
 	CUtlVector <StaticPropDict_t>	m_StaticPropDict;
 	CUtlVector <CStaticProp>		m_StaticProps;
+	int m_nPropsLumpOffset = -1;
 
 	bool m_bIgnoreStaticPropTrace;
 
@@ -392,7 +395,7 @@ static bool LoadFile( char const* pFileName, CUtlBuffer& buf )
 	if ( !g_pFullFileSystem )
 		return false;
 
-	return g_pFullFileSystem->ReadFile( pFileName, NULL, buf );
+	return g_pFullFileSystem->ReadFile( pFileName, "GAME", buf );
 }
 
 
@@ -1022,6 +1025,7 @@ void CVradStaticPropMgr::UnserializeModelDict( CUtlBuffer& buf )
 		buf.Get( &lump, sizeof(StaticPropDictLump_t) );
 		
 		CreateCollisionModel( lump.m_Name );
+		Q_strncpy( m_StaticPropDict[m_StaticPropDict.Count() - 1].m_ModelName, lump.m_Name, STATIC_PROP_NAME_LENGTH );
 	}
 }
 
@@ -1031,6 +1035,7 @@ void CVradStaticPropMgr::UnserializeModels( CUtlBuffer& buf )
 
 
 	m_StaticProps.AddMultipleToTail(count);
+	m_nPropsLumpOffset = buf.TellGet();
 	for ( int i = 0; i < count; ++i )				  
 	{
 		StaticPropLump_t lump;
@@ -1146,11 +1151,21 @@ bool PositionInSolid( Vector &position )
 	return false;
 }
 
+struct PropDirectItem_t { Vector contrib; int callIdx; };
+struct PropDirectRec_t
+{
+	CUtlVector<PropDirectItem_t> items;
+	CUtlVector<int> vertStart;	// debut des items par sommet, +1 fin
+	CUtlVector<unsigned char> vertComplex;
+	bool curComplex;
+};
+static __declspec( thread ) PropDirectRec_t *s_pDirectRec = NULL;
+
 //-----------------------------------------------------------------------------
 // Trace from a vertex to each direct light source, accumulating its contribution.
 //-----------------------------------------------------------------------------
 void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &outColor, int iThread,
-								   int static_prop_id_to_skip=-1, int nLFlags = 0)
+								   int static_prop_id_to_skip=-1, int nLFlags = 0, int styleMode = 0)
 {
 	SSE_sampleLightOutput_t	sampleOutput;
 
@@ -1160,9 +1175,9 @@ void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &out
 	int cluster = ClusterFromPoint( position );
 	for ( directlight_t *dl = activelights; dl != NULL; dl = dl->next )
 	{
-		if ( dl->light.style )
+		// styleMode 0 : lumieres sans style seulement ; 1 : lumieres a style seulement
+		if ( ( dl->light.style != 0 ) != ( styleMode == 1 ) )
 		{
-			// skip lights with style
 			continue;
 		}
 
@@ -1200,11 +1215,77 @@ void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &out
 		adjusted_pos4.DuplicateVector( adjusted_pos );
 		normal4.DuplicateVector( normal );
 
+		int r0 = g_pRayQueue ? g_pRayQueue->rays.Count() : 0;
 		GatherSampleLightSSE( sampleOutput, dl, -1, adjusted_pos4, &normal4, 1, iThread, nLFlags | GATHERLFLAGS_FORCE_FAST,
-		                      static_prop_id_to_skip, flEpsilon );
-		
-		VectorMA( outColor, sampleOutput.m_flFalloff.m128_f32[0] * sampleOutput.m_flDot[0].m128_f32[0], dl->light.intensity, outColor );
+							  static_prop_id_to_skip, flEpsilon );
+
+		float w = sampleOutput.m_flFalloff.m128_f32[0] * sampleOutput.m_flDot[0].m128_f32[0];
+		if ( s_pDirectRec && g_pRayQueue )
+		{
+			int dr = g_pRayQueue->rays.Count() - r0;
+			if ( dr == 0 || dr == 24 )
+			{
+				PropDirectItem_t it;
+				it.contrib = dl->light.intensity * w;
+				it.callIdx = dr ? r0 / 24 : -1;
+				s_pDirectRec->items.AddToTail( it );
+			}
+			else
+				s_pDirectRec->curComplex = true;
+		}
+		VectorMA( outColor, w, dl->light.intensity, outColor );
 	}
+}
+
+//-----------------------------------------------------------------------------
+// Un prop statique n'a qu'une couleur par sommet : il ne peut pas suivre un style de lumiere.
+// Detecte les props eclaires surtout par des lumieres a style (interrupteurs) : ils seraient
+// cuits noirs (les lumieres a style sont ignorees). On les bascule alors en eclairage dynamique.
+//-----------------------------------------------------------------------------
+extern bool g_bNoPropMark;
+static volatile LONG s_nPropsMarked = 0;
+static volatile LONGLONG s_tPropPre = 0, s_tPropDirect = 0, s_tPropIndirect = 0, s_tPropTexel = 0;
+static volatile LONGLONG s_nIndGPU = 0, s_nIndCPU = 0;
+static inline LONGLONG PropTicks() { LARGE_INTEGER t; QueryPerformanceCounter( &t ); return t.QuadPart; }
+
+static float PropLuminance( const Vector &c )
+{
+	return c.x * 0.30f + c.y * 0.59f + c.z * 0.11f;
+}
+
+static bool PositionNeedsStyleFallback( const Vector &pos, int iThread )
+{
+	Vector p = pos;
+	int cluster = ClusterFromPoint( p );
+	bool anyStyled = false;
+	for ( directlight_t *dl = activelights; dl != NULL; dl = dl->next )
+	{
+		if ( dl->light.style && PVSCheck( dl->pvs, cluster ) )
+		{
+			anyStyled = true;
+			break;
+		}
+	}
+	if ( !anyStyled )
+		return false;
+
+	static const Vector normals[6] = { Vector( 1, 0, 0 ), Vector( -1, 0, 0 ), Vector( 0, 1, 0 ), Vector( 0, -1, 0 ), Vector( 0, 0, 1 ), Vector( 0, 0, -1 ) };
+	float styledMax = 0.0f, plainMax = 0.0f;
+	for ( int i = 0; i < 6; ++i )
+	{
+		Vector n = normals[i], c;
+		ComputeDirectLightingAtPoint( p, n, c, iThread, -1, 0, 1 );
+		styledMax = max( styledMax, PropLuminance( c ) );
+	}
+	if ( styledMax < 1.0f )
+		return false;
+	for ( int i = 0; i < 6; ++i )
+	{
+		Vector n = normals[i], c;
+		ComputeDirectLightingAtPoint( p, n, c, iThread, -1, 0, 0 );
+		plainMax = max( plainMax, PropLuminance( c ) );
+	}
+	return plainMax < 0.25f * styledMax;
 }
 
 //-----------------------------------------------------------------------------
@@ -1328,6 +1409,23 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 	if (!withVertexLighting && !withTexelLighting)
 		return;
 
+	if ( !g_bNoPropMark && withVertexLighting && m_nPropsLumpOffset >= 0 )
+	{
+		Vector probe = prop.m_bLightingOriginValid ? prop.m_LightingOrigin : prop.m_Origin;
+		if ( !PositionInSolid( probe ) && PositionNeedsStyleFallback( probe, iThread ) )
+		{
+			const int kMark = STATIC_PROP_NO_PER_VERTEX_LIGHTING;
+			prop.m_Flags |= kMark;
+			GameLumpHandle_t handle = g_GameLumps.GetGameLumpHandle( GAMELUMP_STATIC_PROPS );
+			StaticPropLump_t *pLump = (StaticPropLump_t *)( (byte *)g_GameLumps.GetGameLump( handle ) + m_nPropsLumpOffset ) + prop_index;
+			pLump->m_Flags |= kMark;
+			LONG n = InterlockedIncrement( &s_nPropsMarked );
+			if ( n <= 20 )
+				Warning( "[VRAD GPU] Avertissement : le prop statique %d (%s) est eclaire par des lumieres a style (interrupteurs) et serait reste noir ; il est passe en eclairage dynamique (-NoPropMark pour desactiver).\n", prop_index, dict.m_ModelName );
+			return;
+		}
+	}
+
 	const int skip_prop = (g_bDisablePropSelfShadowing || (prop.m_Flags & STATIC_PROP_NO_SELF_SHADOWING)) ? prop_index : -1;
 	const int nFlags = ( prop.m_Flags & STATIC_PROP_IGNORE_NORMALS ) ? GATHERLFLAGS_IGNORE_NORMALS : 0;
 
@@ -1338,7 +1436,109 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 	matrix3x4_t	matPos, matNormal;
 	AngleMatrix(prop.m_Angles, prop.m_Origin, matPos);
 	AngleMatrix(prop.m_Angles, matNormal);
-	
+
+	// CUDA : pre-passe qui enregistre les rayons d'ombre de la lumiere directe des sommets
+	// (meme ordre que la boucle principale), un lot GPU, puis rejeu par TestLine.
+	static __declspec( thread ) VradRayQueue_t *s_tlsPropQueue = NULL;
+	VradRayQueue_t *gpuQueue = NULL;
+	PropDirectRec_t directRec;
+	int directCursor = 0;
+	LONGLONG tPre0 = PropTicks();
+	if ( g_bUseCUDA && skip_prop == -1 && withVertexLighting )
+	{
+		if ( !s_tlsPropQueue )
+			s_tlsPropQueue = new VradRayQueue_t;
+		VradRayQueue_t *q = s_tlsPropQueue;
+		q->mode = 1;
+		q->pos = 0;
+		q->misses = 0;
+		q->rays.RemoveAll();
+		g_pRayQueue = q;
+		s_pDirectRec = &directRec;
+		directRec.items.RemoveAll();
+		directRec.vertStart.RemoveAll();
+		directRec.vertComplex.RemoveAll();
+		for ( int b = 0; b < pStudioHdr->numbodyparts; ++b )
+		{
+			mstudiobodyparts_t *pBP = pStudioHdr->pBodypart( b );
+			for ( int m = 0; m < pBP->nummodels; ++m )
+			{
+				mstudiomodel_t *pSM = pBP->pModel( m );
+				for ( int me = 0; me < pSM->nummeshes; ++me )
+				{
+					mstudiomesh_t *pMesh = pSM->pMesh( me );
+					const mstudio_meshvertexdata_t *vd = pMesh->GetVertexData( (void *)pStudioHdr );
+					for ( int v = 0; v < pMesh->numvertices; ++v )
+					{
+						Vector p, n, c;
+						VectorTransform( *vd->Position( v ), matPos, p );
+						VectorTransform( *vd->Normal( v ), matNormal, n );
+						if ( PositionInSolid( p ) )
+							continue;
+						directRec.vertStart.AddToTail( directRec.items.Count() );
+						directRec.curComplex = false;
+						ComputeDirectLightingAtPoint( p, n, c, iThread, skip_prop, nFlags );
+						directRec.vertComplex.AddToTail( directRec.curComplex ? 1 : 0 );
+					}
+				}
+			}
+		}
+		g_pRayQueue = NULL;
+		s_pDirectRec = NULL;
+		directRec.vertStart.AddToTail( directRec.items.Count() );
+		int nRays = q->rays.Count() / 6;
+		bool ok = false;
+		if ( nRays > 0 )
+		{
+			q->res.SetCount( nRays );
+			ok = VradGPU_TraceRays( q->rays.Base(), nRays, q->res.Base(), 2, -1 );
+		}
+		if ( ok )
+		{
+			q->mode = 2;
+			q->pos = 0;
+			gpuQueue = q;
+		}
+	}
+	// CUDA : eclairage indirect de tous les sommets valides du prop en un seul lot GPU
+	// (meme ordre de parcours que la boucle principale).
+	CUtlVector<Vector> indColor;
+	CUtlVector<bool> indValid;
+	int indCursor = 0;
+	bool indBatched = false;
+	if ( g_bUseCUDA && g_bIndirectGPU && withVertexLighting && numbounce >= 1 && !g_bShowStaticPropNormals )
+	{
+		CUtlVector<Vector> pos, nrm;
+		for ( int b = 0; b < pStudioHdr->numbodyparts; ++b )
+		{
+			mstudiobodyparts_t *pBP = pStudioHdr->pBodypart( b );
+			for ( int m = 0; m < pBP->nummodels; ++m )
+			{
+				mstudiomodel_t *pSM = pBP->pModel( m );
+				for ( int me = 0; me < pSM->nummeshes; ++me )
+				{
+					mstudiomesh_t *pMesh = pSM->pMesh( me );
+					const mstudio_meshvertexdata_t *vd = pMesh->GetVertexData( (void *)pStudioHdr );
+					for ( int v = 0; v < pMesh->numvertices; ++v )
+					{
+						Vector p, nn;
+						VectorTransform( *vd->Position( v ), matPos, p );
+						VectorTransform( *vd->Normal( v ), matNormal, nn );
+						if ( PositionInSolid( p ) )
+							continue;
+						pos.AddToTail( p );
+						nrm.AddToTail( nn );
+					}
+				}
+			}
+		}
+		indColor.SetCount( pos.Count() );
+		indValid.SetCount( pos.Count() );
+		indBatched = pos.Count() > 0 && ComputeIndirectLightingBatchGPU( pos.Base(), nrm.Base(), pos.Count(), true,
+			( prop.m_Flags & STATIC_PROP_IGNORE_NORMALS ) != 0, indColor.Base(), indValid.Base() );
+	}
+	InterlockedAdd64( &s_tPropPre, PropTicks() - tPre0 );
+
 	for ( int bodyID = 0; bodyID < pStudioHdr->numbodyparts; ++bodyID )
 	{
 		OptimizedModel::BodyPartHeader_t* pVtxBodyPart = pVtxHdr->pBodyPart( bodyID );
@@ -1374,7 +1574,9 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 				// TODO: Move this into its own function. In fact, refactor this whole function.
 				if (withTexelLighting)
 				{
+					LONGLONG tT0 = PropTicks();
 					GenerateLightmapSamplesForMesh( matPos, matNormal, iThread, skip_prop, nFlags, prop.m_LightmapImageWidth, prop.m_LightmapImageHeight, pStudioHdr, pStudioModel, pVtxModel, meshID, pResults );
+					InterlockedAdd64( &s_tPropTexel, PropTicks() - tT0 );
 				}
 
 				// If we do lightmapping, we also do vertex lighting as a potential fallback. This may change.
@@ -1402,9 +1604,34 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 						
 
 						Vector directColor(0,0,0);
-						ComputeDirectLightingAtPoint( direct_pos,
-														sampleNormal, directColor, iThread,
-														skip_prop, nFlags );
+						LONGLONG tD0 = PropTicks();
+						bool combined = false;
+						if ( gpuQueue )
+						{
+							int vi = directCursor++;
+							if ( !directRec.vertComplex[vi] )
+							{
+								bool ok = true;
+								for ( int k = directRec.vertStart[vi]; k < directRec.vertStart[vi + 1]; ++k )
+									if ( directRec.items[k].callIdx >= 0 && gpuQueue->res[directRec.items[k].callIdx * 4] == 2 )
+										ok = false;
+								if ( ok )
+								{
+									for ( int k = directRec.vertStart[vi]; k < directRec.vertStart[vi + 1]; ++k )
+									{
+										const PropDirectItem_t &it = directRec.items[k];
+										if ( it.callIdx < 0 || gpuQueue->res[it.callIdx * 4] )
+											directColor += it.contrib;
+									}
+									combined = true;
+								}
+							}
+						}
+						if ( !combined )
+							ComputeDirectLightingAtPoint( direct_pos,
+															sampleNormal, directColor, iThread,
+															skip_prop, nFlags );
+						InterlockedAdd64( &s_tPropDirect, PropTicks() - tD0 );
 						Vector indirectColor(0,0,0);
 
 						if (g_bShowStaticPropNormals)
@@ -1415,11 +1642,22 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 						}
 						else
 						{
-							if (numbounce >= 1)
+							int vi = indCursor++;
+							if ( indBatched && vi < indValid.Count() && indValid[vi] )
+							{
+								indirectColor = indColor[vi];
+								InterlockedIncrement64( &s_nIndGPU );
+							}
+							else if (numbounce >= 1)
+							{
+								InterlockedIncrement64( &s_nIndCPU );
+								LONGLONG tI0 = PropTicks();
 								ComputeIndirectLightingAtPoint( 
 									samplePosition, sampleNormal, 
 									indirectColor, iThread, true,
 									( prop.m_Flags & STATIC_PROP_IGNORE_NORMALS) != 0 );
+								InterlockedAdd64( &s_tPropIndirect, PropTicks() - tI0 );
+							}
 						}
 						
 						colorVerts[numVertexes].m_bValid = true;
@@ -1531,6 +1769,10 @@ void CVradStaticPropMgr::SerializeLighting()
 		if ( m_StaticProps[i].m_Flags & STATIC_PROP_NO_PER_VERTEX_LIGHTING )
 			continue;
 
+		// model failed to load (missing content): nothing to write
+		if ( !m_StaticPropDict[m_StaticProps[i].m_ModelIdx].m_pStudioHdr )
+			continue;
+
 		if (g_bHDR)
 		{
 			sprintf( filename, "sp_hdr_%d.vhv", i );
@@ -1607,6 +1849,10 @@ void CVradStaticPropMgr::SerializeLighting()
 		// no need to write this file if we didn't compute the data
 		// props marked this way will not load the info anyway 
 		if (m_StaticProps[i].m_Flags & STATIC_PROP_NO_PER_TEXEL_LIGHTING)
+			continue;
+
+		// model failed to load (missing content): nothing to write
+		if ( !m_StaticPropDict[m_StaticProps[i].m_ModelIdx].m_pStudioHdr )
 			continue;
 
 		sprintf(filename, "texelslighting_%d.ppl", i);
@@ -1806,6 +2052,17 @@ void CVradStaticPropMgr::ComputeLighting( int iThread )
 
 	// restore default
 	m_bIgnoreStaticPropTrace = false;
+
+	{
+		LARGE_INTEGER f; QueryPerformanceFrequency( &f );
+		double inv = 1.0 / (double)f.QuadPart;
+		Warning( "\n[PROF] props (cumule threads) : preGPU %.1f s, direct %.1f s, indirect %.1f s, texels %.1f s\n",
+			 s_tPropPre * inv, s_tPropDirect * inv, s_tPropIndirect * inv, s_tPropTexel * inv );
+		Warning( "[PROF] indirect props : %lld sommets GPU, %lld sommets repasses au CPU\n", s_nIndGPU, s_nIndCPU );
+	}
+
+	if ( s_nPropsMarked )
+		Warning( "\n[VRAD GPU] %d props statiques passes en eclairage dynamique (lumieres a style). -NoPropMark pour desactiver.\n", (int)s_nPropsMarked );
 
 	// save data to bsp
 	SerializeLighting();

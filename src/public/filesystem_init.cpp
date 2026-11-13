@@ -398,6 +398,14 @@ bool FileSystem_GetExecutableDir( char *exedir, int exeDirLen )
 
 static bool FileSystem_GetBaseDir( char *baseDir, int baseDirLen )
 {
+	char szOverride[MAX_PATH];
+	if ( GetEnvironmentVariableA( "SDK_BASE_DIR", szOverride, sizeof( szOverride ) ) && szOverride[0] )
+	{
+		Q_strncpy( baseDir, szOverride, baseDirLen );
+		Q_FixSlashes( baseDir );
+		return true;
+	}
+
 	if ( FileSystem_GetExecutableDir( baseDir, baseDirLen ) )
 	{
 		Q_StripFilename( baseDir );
@@ -602,7 +610,6 @@ struct Source1AppidInfo_t
 } g_Source1Appids[]
 {
 	{ 220, "Half-Life 2" },
-	{ 4000, "Garry's Mod  [GMOD]" },
 	{ 320, "Half-Life 2: Deathmatch" },
 	{ 340, "Half-Life 2: Lost Coast" },
 	// Deprecated.
@@ -794,14 +801,16 @@ FSReturnCode_t FileSystem_LoadSearchPaths( CFSSearchPathsInit &initInfo )
 		else
 		{
 			FileFindHandle_t findHandle = NULL;
-			const char *pszFoundShortName = initInfo.m_pFileSystem->FindFirst( szAbsSearchPath, &findHandle );
+			WIN32_FIND_DATAA wfd;
+			HANDLE hFind = ::FindFirstFileA( szAbsSearchPath, &wfd );
+			const char *pszFoundShortName = ( hFind != INVALID_HANDLE_VALUE ) ? wfd.cFileName : NULL;
 			if ( pszFoundShortName )
 			{
 				do 
 				{
 
 					// We only know how to mount VPK's and directories
-					if ( pszFoundShortName[0] != '.' && ( initInfo.m_pFileSystem->FindIsDirectory( findHandle ) || V_stristr( pszFoundShortName, ".vpk" ) ) )
+					if ( pszFoundShortName[0] != '.' && ( ( wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY ) || V_stristr( pszFoundShortName, ".vpk" ) ) )
 					{
 						char szAbsName[MAX_PATH];
 						V_ExtractFilePath( szAbsSearchPath, szAbsName, sizeof( szAbsName ) );
@@ -833,9 +842,9 @@ FSReturnCode_t FileSystem_LoadSearchPaths( CFSSearchPathsInit &initInfo )
 						}
 
 					}
-					pszFoundShortName = initInfo.m_pFileSystem->FindNext( findHandle );
+					pszFoundShortName = ::FindNextFileA( hFind, &wfd ) ? wfd.cFileName : NULL;
 				} while ( pszFoundShortName );
-				initInfo.m_pFileSystem->FindClose( findHandle );
+				::FindClose( hFind );
 			}
 
 			// Sort alphabetically.  Also note that this will put

@@ -582,6 +582,8 @@ extern int patchSamplesAdded;
 void ComputeDetailPropLighting( int iThread );
 void ComputeIndirectLightingAtPoint( Vector &position, Vector &normal, Vector &outColor, 
 									 int iThread, bool force_fast = false, bool bIgnoreNormals = false );
+bool ComputeIndirectLightingBatchGPU( const Vector *pPos, const Vector *pNormal, int n,
+									  bool force_fast, bool bIgnoreNormals, Vector *pOut, bool *pValid );
 
 //-----------------------------------------------------------------------------
 // VRad static props

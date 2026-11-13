@@ -7,6 +7,8 @@
 //=============================================================================//
 
 #include "vrad.h"
+#include "vrad_gpu.h"
+#include "vrad_gpu.cpp"	// compile avec vismat.cpp (evite de modifier le vcxproj)
 #include "vmpi.h"
 #ifdef MPI
 #include "messbuf.h"
@@ -36,6 +38,15 @@ Use the PVS to accelerate if available
 
 #define STREAM_SIZE 512
 
+static volatile __int64 s_xGpu = 0, s_xApply = 0, s_xBatches = 0, s_xRows = 0;
+static __int64 XNow() { LARGE_INTEGER t; QueryPerformanceCounter( &t ); return t.QuadPart; }
+void VradProf_PrintTransfer()
+{
+	LARGE_INTEGER f; QueryPerformanceFrequency( &f );
+	Msg( "[PROF] transferts : GPU %.2f s, application %.2f s, generation rayons %.2f s (cumule threads), %d lots\n",
+		(double)s_xGpu / f.QuadPart, (double)s_xApply / f.QuadPart, (double)s_xRows / f.QuadPart, (int)s_xBatches );
+}
+
 class CTransferMaker
 {
 public:
@@ -45,7 +56,14 @@ public:
 
 	FORCEINLINE void TestMakeTransfer( Vector start, Vector stop, int ndxShooter, int ndxReciever )
 	{
-		g_RtEnv.AddToRayStream( m_RayStream, start, stop, &m_pResults[m_nTests] );
+		if ( g_bUseCUDA )
+		{
+			float *r = &m_pGpuRays[m_nTests * 6];
+			r[0] = start.x; r[1] = start.y; r[2] = start.z;
+			r[3] = stop.x; r[4] = stop.y; r[5] = stop.z;
+		}
+		if ( !g_bUseCUDA || g_bCUDAVerify )
+			g_RtEnv.AddToRayStream( m_RayStream, start, stop, &m_pResults[m_nTests] );
 		m_pShooterPatches[m_nTests] = ndxShooter;
 		m_pRecieverPatches[m_nTests] = ndxReciever;
 		++m_nTests;
@@ -53,12 +71,23 @@ public:
 
 	void Finish();
 
+	// Mode CUDA : les rayons de plusieurs patchs sont accumules puis traces en un seul lot.
+	void EndPatch( int patchnum, CPatch *patch );
+	bool BatchFull() const { return m_nTests + MAX_PATCHES > m_nCapacity || m_Pending.Count() >= 2048; }
+	void FlushBatch( void (*PatchCB)(int iThread, int patchnum, CPatch *patch), int iThread );
+
 private:
 
+	struct PendingPatch_t { int patchnum; int endTest; CPatch *patch; };
+	void Resolve();
+	int m_nCapacity;
+	CUtlVector<PendingPatch_t> m_Pending;
 	int m_nTests;
 	RayTracingSingleResult *m_pResults;
 	int *m_pShooterPatches;
 	int *m_pRecieverPatches;
+	float *m_pGpuRays;
+	unsigned char *m_pGpuOut;
 	RayStream m_RayStream;
 	transfer_t *m_AllTransfers;
 };
@@ -66,9 +95,12 @@ private:
 CTransferMaker::CTransferMaker( transfer_t *all_transfers ) :
 	m_AllTransfers( all_transfers ), m_nTests( 0 )
 {
-	m_pResults = (RayTracingSingleResult *)calloc( 1, MAX_PATCHES * sizeof ( RayTracingSingleResult ) );
-	m_pShooterPatches = (int *)calloc( 1, MAX_PATCHES * sizeof( int ) );
-	m_pRecieverPatches = (int *)calloc( 1, MAX_PATCHES * sizeof( int ) );
+	m_nCapacity = g_bUseCUDA ? MAX_PATCHES * 4 : MAX_PATCHES;
+	m_pResults = (RayTracingSingleResult *)calloc( 1, m_nCapacity * sizeof ( RayTracingSingleResult ) );
+	m_pShooterPatches = (int *)calloc( 1, m_nCapacity * sizeof( int ) );
+	m_pRecieverPatches = (int *)calloc( 1, m_nCapacity * sizeof( int ) );
+	m_pGpuRays = g_bUseCUDA ? (float *)calloc( 1, (size_t)m_nCapacity * 6 * sizeof( float ) ) : NULL;
+	m_pGpuOut = g_bUseCUDA ? (unsigned char *)calloc( 1, m_nCapacity ) : NULL;
 }
 
 CTransferMaker::~CTransferMaker()
@@ -76,19 +108,88 @@ CTransferMaker::~CTransferMaker()
 	free ( m_pResults );
 	free ( m_pShooterPatches );
 	free (m_pRecieverPatches );
+	free( m_pGpuRays );
+	free( m_pGpuOut );
+}
+
+// Calcule la visibilite finale de chaque test. Resultat dans m_pGpuOut (1 = visible) en mode CUDA.
+void CTransferMaker::Resolve()
+{
+	if ( !g_bUseCUDA || g_bCUDAVerify )
+		g_RtEnv.FinishRayStream( m_RayStream );
+
+	if ( !g_bUseCUDA )
+		return;
+
+	bool gpuOk = VradGPU_TraceVisibility( m_pGpuRays, m_nTests, m_pGpuOut );
+	if ( !gpuOk )
+	{
+		if ( !g_bCUDAVerify )
+			Error( "[VRAD GPU] echec du lancement CUDA pendant les transferts\n" );
+		for ( int i = 0; i < m_nTests; ++i )
+			m_pGpuOut[i] = ( m_pResults[i].HitID == -1 || m_pResults[i].HitDistance >= m_pResults[i].ray_length );
+		return;
+	}
+	if ( g_bCUDAVerify )
+	{
+		int mismatches = 0;
+		for ( int i = 0; i < m_nTests; ++i )
+		{
+			bool cpuFree = ( m_pResults[i].HitID == -1 || m_pResults[i].HitDistance >= m_pResults[i].ray_length );
+			mismatches += ( ( m_pGpuOut[i] != 0 ) != cpuFree );
+			m_pGpuOut[i] = cpuFree;	// la verification n'altere pas le resultat
+		}
+		VradGPU_AddVerifyStats( m_nTests, mismatches );
+	}
 }
 
 void CTransferMaker::Finish()
 {
-	g_RtEnv.FinishRayStream( m_RayStream );
+	Resolve();
 	for ( int i = 0; i < m_nTests; ++i )
 	{
-		if ( m_pResults[i].HitID == -1 || m_pResults[i].HitDistance >= m_pResults[i].ray_length )
-		{
+		bool visible = g_bUseCUDA ? ( m_pGpuOut[i] != 0 )
+			: ( m_pResults[i].HitID == -1 || m_pResults[i].HitDistance >= m_pResults[i].ray_length );
+		if ( visible )
 			MakeTransfer( m_pShooterPatches[i], m_pRecieverPatches[i], m_AllTransfers );
-		}
 	}
 	m_nTests = 0;
+}
+
+void CTransferMaker::EndPatch( int patchnum, CPatch *patch )
+{
+	PendingPatch_t p = { patchnum, m_nTests, patch };
+	m_Pending.AddToTail( p );
+}
+
+void CTransferMaker::FlushBatch( void (*PatchCB)(int iThread, int patchnum, CPatch *patch), int iThread )
+{
+	if ( m_Pending.Count() == 0 )
+		return;
+	__int64 x0 = XNow();
+	Resolve();
+	__int64 x1 = XNow();
+
+	int begin = 0;
+	for ( int p = 0; p < m_Pending.Count(); ++p )
+	{
+		for ( int i = begin; i < m_Pending[p].endTest; ++i )
+		{
+			if ( m_pGpuOut[i] )
+				MakeTransfer( m_pShooterPatches[i], m_pRecieverPatches[i], m_AllTransfers );
+		}
+		begin = m_Pending[p].endTest;
+
+		MakeScales( m_Pending[p].patchnum, m_AllTransfers );
+		if ( PatchCB )
+			PatchCB( iThread, m_Pending[p].patchnum, m_Pending[p].patch );
+	}
+	m_Pending.RemoveAll();
+	m_nTests = 0;
+	__int64 x2 = XNow();
+	InterlockedExchangeAdd64( &s_xGpu, x1 - x0 );
+	InterlockedExchangeAdd64( &s_xApply, x2 - x1 );
+	InterlockedIncrement64( &s_xBatches );
 }
 
 
@@ -418,9 +519,21 @@ void BuildVisLeafs_Cluster(
 			patchnum = patch - g_Patches.Base();
 
 			// build to all other world clusters
+			__int64 xr0 = XNow();
 			BuildVisRow (patchnum, pvs, head, transfers, transferMaker, threadnum );
+			InterlockedExchangeAdd64( &s_xRows, XNow() - xr0 );
+
+			if ( g_bUseCUDA )
+			{
+				// les transferts de ce patch seront crees au prochain FlushBatch
+				transferMaker.EndPatch( patchnum, patch );
+				if ( transferMaker.BatchFull() )
+					transferMaker.FlushBatch( PatchCB, threadnum );
+				continue;
+			}
+
 			transferMaker.Finish();
-			
+
 			// do the transfers
 			MakeScales( patchnum, transfers );
 
@@ -429,6 +542,9 @@ void BuildVisLeafs_Cluster(
 				PatchCB( threadnum, patchnum, patch );
 		}
 	}
+
+	if ( g_bUseCUDA )
+		transferMaker.FlushBatch( PatchCB, threadnum );
 }
 
 

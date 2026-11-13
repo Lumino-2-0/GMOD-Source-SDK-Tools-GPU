@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <ItemGroup >
+  <ItemGroup>
     <Filter Include="Header Files">
       <UniqueIdentifier>{922C6F41-C460-59B1-3A59-D4FA6DDC9C37}</UniqueIdentifier>
     </Filter>
@@ -14,39 +14,24 @@
       <UniqueIdentifier>{308191AE-A754-30DF-D5BD-5928E19D585F}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
-  <ItemGroup >
-    <Library Include="..\..\lib\public\x64\tier0.lib">
-      <Filter>Link Libraries</Filter>
-    </Library>
-    <Library Include="..\..\lib\public\x64\tier1.lib">
-      <Filter>Link Libraries</Filter>
-    </Library>
-    <Library Include="..\..\lib\public\x64\vstdlib.lib">
-      <Filter>Link Libraries</Filter>
-    </Library>
-  </ItemGroup>
-  <ItemGroup >
-    <ClInclude Include="..\..\public\tier1\interface.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\public\ivraddll.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
+  <ItemGroup>
     <ClInclude Include="StdAfx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="embedded_dlls.h" />
+    <ClInclude Include="embedded_dll_extractor.h" />
+    <ClInclude Include="resource.h" />
   </ItemGroup>
-  <ItemGroup >
+  <ItemGroup>
     <ClCompile Include="StdAfx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="vrad_launcher.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="embedded_dll_extractor.cpp" />
   </ItemGroup>
-  <ItemGroup  />
-  <ItemGroup  />
-  <ItemGroup >
+  <ItemGroup>
     <None Include="..\..\vpc_scripts\loadaddress.vpc">
       <Filter>VPC Scripts</Filter>
     </None>
@@ -83,5 +68,15 @@
     <None Include="vrad_launcher.vpc">
       <Filter>VPC Scripts</Filter>
     </None>
+    <None Include="..\..\..\VVIS_Bin\tier0.dll" />
+    <None Include="..\..\..\VVIS_Bin\vstdlib.dll" />
+    <None Include="..\..\..\VVIS_Bin\bin\x64\filesystem_stdio.dll" />
+    <None Include="..\vrad\Release\x64\vrad_dll.dll" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="embedded_dlls.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="..\..\..\VRad_GPU.ico" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,21 @@
+//========= Copyright Lumastor Corporation, All rights reserved. ============//
+//
+// Purpose: Embeds the runtime DLLs required by the Source SDK tier0 /
+// vstdlib / filesystem_stdio layer directly into vvis_gpu.exe as RCDATA
+// resources, so the executable does not need them shipped as separate
+// files sitting next to it.
+//
+// These paths point at the existing prebuilt binaries in VVIS_Bin; they are
+// not part of this solution's build (tier0/vstdlib come from the engine
+// build, filesystem_stdio from the dedicated filesystem project) so they
+// are simply picked up as data here.
+//
+//=============================================================================//
+#include "embedded_dlls.h"
+
+1 ICON "vvis_gpu.ico"
+
+IDR_TIER0_DLL             RCDATA "..\\..\\..\\VVIS_Bin\\tier0.dll"
+IDR_VSTDLIB_DLL           RCDATA "..\\..\\..\\VVIS_Bin\\vstdlib.dll"
+IDR_FILESYSTEM_STDIO_DLL  RCDATA "..\\..\\..\\VVIS_Bin\\bin\\x64\\filesystem_stdio.dll"
+IDR_VVIS_DLL              RCDATA "..\\..\\..\\VVIS_Bin\\vvis_dll.dll"
