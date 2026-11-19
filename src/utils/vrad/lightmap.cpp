@@ -663,7 +663,7 @@ bool BuildFacesamples( lightinfo_t *pLightInfo, facelight_t *pFaceLight )
 
 	// allocate a large number of samples for creation -- get copied later!
 	CUtlVector<sample_t> sampleData;
-	// 1 sample max par luxel : certaines maps depassent largement 32x32
+	// up to one sample per luxel: some maps have faces far larger than 32x32 luxels
 	sampleData.SetCount( MAX( SINGLE_BRUSH_MAP * 2, width * height ) );
 	sample_t *samples = sampleData.Base();
 	sample_t *pSamples = samples;
@@ -1997,27 +1997,27 @@ void GatherSampleStandardLightSSE( SSE_sampleLightOutput_t &out, directlight_t *
 	}
 }
 
+static volatile LONGLONG s_LightTicks[4], s_LightCalls[4];
+
+void VradProf_PrintLights()
+{
+	static const char *names[4] = { "skylight", "skyambient", "standard", "other" };
+	LARGE_INTEGER f; QueryPerformanceFrequency( &f );
+	for ( int i = 0; i < 3; i++ )
+		Msg( "[PROF] light %-10s: %10.2f s (summed over threads), %lld calls\n", names[i], (double)s_LightTicks[i] / (double)f.QuadPart, s_LightCalls[i] );
+	long long tot[5] = { 0, 0, 0, 0, 0 };
+	for ( int t = 0; t < 64; t++ )
+		for ( int k = 0; k < 5; k++ )
+			tot[k] += s_PairStats[t][k];
+	Msg( "[PROF] standard pairs (sample x light): total %lld, >0 %lld, >=0.01 %lld, >=0.1 %lld, >=1 %lld\n", tot[0], tot[1], tot[2], tot[3], tot[4] );
+}
+
 // returns dot product with normal and delta
 // dl - light
 // pos - position of sample
 // normal - surface normal of sample
 // out.m_flDot[] - returned dot products with light vector and each normal
 // out.m_flFalloff - amount of light falloff
-static volatile LONGLONG s_LightTicks[4], s_LightCalls[4];
-
-void VradProf_PrintLights()
-{
-	static const char *names[4] = { "skylight", "skyambient", "standard", "autre" };
-	LARGE_INTEGER f; QueryPerformanceFrequency( &f );
-	for ( int i = 0; i < 3; i++ )
-		Msg( "[PROF] lumiere %-10s : %10.2f s (cumul threads), %lld appels\n", names[i], (double)s_LightTicks[i] / (double)f.QuadPart, s_LightCalls[i] );
-	long long tot[5] = { 0, 0, 0, 0, 0 };
-	for ( int t = 0; t < 64; t++ )
-		for ( int k = 0; k < 5; k++ )
-			tot[k] += s_PairStats[t][k];
-	Msg( "[PROF] paires standard (echantillon x lumiere) : total %lld, >0 %lld, >=0.01 %lld, >=0.1 %lld, >=1 %lld\n", tot[0], tot[1], tot[2], tot[3], tot[4] );
-}
-
 void GatherSampleLightSSE( SSE_sampleLightOutput_t &out, directlight_t *dl, int facenum, 
 					   FourVectors const& pos, FourVectors *pNormals, int normalCount, int iThread,
 					   int nLFlags,
@@ -2532,8 +2532,8 @@ static void GatherSampleLightAt4Points( SSE_SampleInfo_t& info, int sampleIdx, i
 		if ( skipLight )
 			continue;
 
-		// Passe d'enregistrement GPU : on ne collecte que les rayons des lumieres standard,
-		// sans modifier aucune lightmap (le rejeu refait le calcul complet).
+		// GPU record pass: only collect the shadow rays of standard lights, without
+		// modifying any lightmap (the replay pass redoes the full computation).
 		bool bRecord = ( g_pRayQueue && g_pRayQueue->mode == 1 );
 		if ( bRecord && dl->light.type != emit_point && dl->light.type != emit_surface && dl->light.type != emit_spotlight )
 			continue;
@@ -3145,8 +3145,9 @@ void BuildFacelights (int iThread, int facenum)
 	AllocateLightstyleSamples( fl, 0, sampleInfo.m_NormalCount );
 
 	// sample the lights at each sample location
-	// Mode CUDA : passe 1 = enregistrement des rayons d'ombre (aucun effet de bord), un lot GPU,
-	// passe 2 = calcul normal dont TestLine rejoue les resultats GPU. Sinon : une seule passe CPU.
+	// CUDA mode: pass 1 records the shadow rays (no side effects), which are then traced in
+	// one GPU batch; pass 2 is the normal computation, with TestLine replaying the GPU
+	// results. Otherwise: a single CPU pass.
 	static __declspec( thread ) VradRayQueue_t *s_tlsQueue = NULL;
 	bool useGpu = g_bUseCUDA && !g_pIncremental;
 	VradRayQueue_t *queue = NULL;

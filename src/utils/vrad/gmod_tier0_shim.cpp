@@ -1,8 +1,8 @@
 //=============================================================================//
-// Purpose: fournit les symboles tier0 du SDK 2013 absents du tier0.dll x64 de
-// Garry's Mod (qui utilise un tier0 plus recent), afin que vrad_dll.dll puisse
-// se lier au tier0 de GMod (obligatoire pour charger son vphysics.dll).
-// Ce fichier n'inclut volontairement aucun en-tete tier0.
+// Purpose: provides the SDK 2013 tier0 symbols that are missing from Garry's
+// Mod's x64 tier0.dll (which is a newer tier0), so that vrad_dll.dll can link
+// against GMod's tier0 (required to load GMod's vphysics.dll).
+// This file intentionally includes no tier0 header.
 //=============================================================================//
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -24,7 +24,7 @@ namespace
 		return (int)r;
 	}
 
-	// Layout de CThreadFastMutex (x64) : m_ownerID (8 octets) puis m_depth (int).
+	// CThreadFastMutex layout (x64): m_ownerID (8 bytes), then m_depth (int).
 	void ShimFastMutexLock( volatile void *pThis, unsigned __int64 threadId, unsigned nSpinSleepTime )
 	{
 		volatile unsigned __int64 *pOwner = (volatile unsigned __int64 *)pThis;
@@ -56,7 +56,7 @@ namespace
 	void *ShimCommandLine()
 	{
 		typedef void *( *Fn )();
-		// tier0 de GMod exporte "CommandLine", celui du SDK (runtime embarque) "CommandLine_Tier0".
+		// GMod's tier0 exports "CommandLine"; the SDK one (embedded runtime) exports "CommandLine_Tier0".
 		static Fn fn = NULL;
 		if ( !fn )
 		{

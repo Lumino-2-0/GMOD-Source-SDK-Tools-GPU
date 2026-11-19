@@ -2,16 +2,18 @@
 //
 // Purpose: Single-executable bootstrap for VVIS GPU.
 //
-// vvis_gpu.exe embarque tier0, vstdlib, filesystem_stdio et vvis_dll en
-// RCDATA (embedded_dlls.rc). Au lancement on les extrait dans
-// %LOCALAPPDATA%\vvis_gpu\<hash>, puis on charge vvis_dll.dll comme le
-// vvis_launcher d'origine. Un seul exe a distribuer.
+// vvis_gpu.exe embeds tier0, vstdlib, filesystem_stdio and vvis_dll as
+// RCDATA resources (embedded_dlls.rc). At startup they are extracted to
+// %LOCALAPPDATA%\vvis_gpu\<hash>, then vvis_dll.dll is loaded just like the
+// original vvis_launcher does. Only one exe to distribute.
 //
-// GMod est detecte via Steam (registre + libraryfolders.vdf) : -game est
-// ajoute tout seul si absent. -gamebin = utiliser les DLL x64 du jeu.
+// GMod is detected through Steam (registry + libraryfolders.vdf): -game is
+// added automatically when missing. -gamebin = use the game's x64 DLLs.
+// At startup, vvis_updater checks GitHub for a newer version and installs it
+// in place of this exe (-noupdate to disable).
 //
-// Pas de lien vers tier0/vstdlib ici (tier0 exporte des donnees, donc pas
-// de /DELAYLOAD possible) : uniquement du Win32 brut LoadLibrary/GetProcAddress.
+// No link against tier0/vstdlib here (tier0 exports data, so /DELAYLOAD is
+// not possible): only raw Win32 LoadLibrary/GetProcAddress.
 //
 //=============================================================================//
 
@@ -21,6 +23,7 @@
 #include "ilaunchabledll.h"
 #include "embedded_dlls.h"
 #include "embedded_dll_extractor.h"
+#include "vvis_updater.h"
 
 typedef void* (*CreateInterfaceFn)( const char *pName, int *pReturnCode );
 
@@ -294,6 +297,11 @@ static bool ExtractAllEmbeddedRuntimeDlls( char *pExeDir, int exeDirSize, const 
 
 int main(int argc, char* argv[])
 {
+	// A newer GitHub release was installed and has already run in our place: exit with its code.
+	int updatedExitCode = 0;
+	if ( VvisUpdater_Run( argc, argv, &updatedExitCode ) )
+		return updatedExitCode;
+
 	// Auto-detect Garry's Mod when the user gave no -game/-vproject and the
 	// map is not already inside a game folder containing gameinfo.txt.
 	char szGameRoot[MAX_PATH] = { 0 };
@@ -304,7 +312,7 @@ int main(int argc, char* argv[])
 	bool bInjectGame = argc >= 2 && !HasArg( argc, argv, "-game" ) && !HasArg( argc, argv, "-vproject" )
 		&& argv[argc - 1][0] != '-' && !MapLivesInsideGameDir( argv[argc - 1] ) && bHaveGame;
 
-	// Rebuild argv without -gamebin (unknown to vvis_dll) and with -game.
+	// Rebuild argv without -gamebin / -noupdate (launcher options) and with -game.
 	// Windows reads a trailing \" (e.g. -game "C:\x\" "map.bsp") as an escaped
 	// quote and merges the next argument into this one: <path>" <rest>.
 	// Such an argument is split back into <path> and <rest>.
@@ -314,12 +322,13 @@ int main(int argc, char* argv[])
 	if ( bInjectGame )
 	{
 		printf( "vvis launcher: auto-detected game: %s\n", szModDir );
+		fflush( stdout );
 		newArgv[newArgc++] = (char *)"-game";
 		newArgv[newArgc++] = szModDir;
 	}
 	for ( int i = 1; i < argc; ++i )
 	{
-		if ( !_stricmp( argv[i], "-gamebin" ) )
+		if ( !_stricmp( argv[i], "-gamebin" ) || !_stricmp( argv[i], "-noupdate" ) )
 			continue;
 		char *pQuote = strchr( argv[i], '"' );
 		if ( pQuote )

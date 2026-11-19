@@ -221,6 +221,7 @@
   <ItemGroup>
     <ClInclude Include="embedded_dlls.h" />
     <ClInclude Include="embedded_dll_extractor.h" />
+    <ClInclude Include="vvis_updater.h" />
     <ClInclude Include="StdAfx.h" />
   </ItemGroup>
   <ItemGroup>
@@ -233,6 +234,10 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="vvis_launcher.cpp" />
+    <ClCompile Include="vvis_updater.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="embedded_dlls.rc" />

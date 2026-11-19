@@ -1,20 +1,20 @@
 // flow_gpu.h
 //
-// Interface entre VVIS (CPU) et le calcul de visibilite sur GPU.
+// Interface between VVIS (CPU) and the GPU visibility computation.
 //
-// Deux backends, charges dynamiquement (aucun lien statique) :
-//   - CUDA   : nvcuda.dll, noyau PTX embarque (flow_gpu_kernel.cu)
-//   - OpenCL : OpenCL.dll, noyau embarque en texte (flow_gpu_kernel.h)
-// Les deux noyaux font exactement le meme calcul. Si aucun GPU n'est
-// utilisable, GPU_Init() renvoie false et VVIS reprend le flow CPU d'origine.
+// Two backends, loaded dynamically (no static linking):
+//   - CUDA   : nvcuda.dll, embedded PTX kernel (flow_gpu_kernel.cu)
+//   - OpenCL : OpenCL.dll, kernel embedded as source text (flow_gpu_kernel.h)
+// Both kernels perform exactly the same computation. If no GPU is usable,
+// GPU_Init() returns false and VVIS falls back to the original CPU flow.
 
 #pragma once
 
 // --- GPUPortal ----------------------------------------------------------------
-// Copie "a plat" d'un portal_t : plan, leaf de destination, sphere englobante
-// et position des sommets du winding dans le tableau winding_pts.
-// Uniquement des champs de 4 octets : la structure a la meme disposition
-// cote CPU, cote CUDA et cote OpenCL C. Ne pas changer l'ordre des champs.
+// Flat copy of a portal_t: plane, destination leaf, bounding sphere and
+// location of the winding vertices in the winding_pts array.
+// Only 4-byte fields, so the structure has the same layout on the CPU, in
+// CUDA and in OpenCL C. Do not change the field order.
 
 typedef struct
 {
@@ -31,8 +31,8 @@ typedef struct
 } GPUPortal;
 
 // --- GPULeaf --------------------------------------------------------------------
-// Un leaf connait ses portails sortants : ils sont stockes dans le tableau
-// leaf_portals, entre les indices portals_start et portals_start + portals_count.
+// A leaf knows its outgoing portals: they are stored in the leaf_portals array,
+// between indices portals_start and portals_start + portals_count.
 
 typedef struct
 {
@@ -40,11 +40,38 @@ typedef struct
 	int portals_count;
 } GPULeaf;
 
-// --- Interface hote ------------------------------------------------------------
+// --- Host interface -----------------------------------------------------------
 
 bool GPU_Init( void );
 void GPU_Shutdown( void );
-// passSamples[k] = plafond de sommets par anneau de la passe k (voir vvis.cpp).
-// Les passes > 0 ne retraitent que les paires candidates non encore prouvees
-// visibles ; les resultats sont fusionnes par OR.
-bool GPU_RunPortalFlowRaycast( int sorted_portal_count, const int *passSamples, int numPasses );
+// One raycast pass.
+//   flags    : RAY_FLAG_* below.
+//   samples  : without HALTON, cap on the vertices used per ring; with HALTON,
+//              number of points spread over the whole portal surface.
+//   ringmask : enabled rings (without HALTON): bit 0 = 90 %, bit 1 = 50 %,
+//              bit 2 = 99 % (corners). Points per portal = 1 + popcount * vertices.
+//   budgetRel, budgetMin : see RAY_FLAG_AUTO.
+// Passes > 0 only reprocess the candidate pairs not yet proven visible;
+// the results are merged with OR.
+typedef struct
+{
+	int samples;
+	int flags;
+	int ringmask;
+	float budgetRel;
+	float budgetMin;
+} GPUPassConfig;
+
+bool GPU_RunPortalFlowRaycast( int sorted_portal_count, const GPUPassConfig *passes, int numPasses );
+
+// Kernel flags (same values as in flow_gpu_kernel.cu / flow_gpu_kernel.h).
+#define RAY_FLAG_EXTEND     1
+#define RAY_FLAG_EXHAUSTIVE 2
+#define RAY_FLAG_HALTON     4
+#define RAY_FLAG_MIRROR     8
+// Host side only: time-budgeted dense pass. `samples` is then only a cap; the host
+// picks the number of points per portal so that the pass lasts at most
+// max( budgetMin, budgetRel * previous pass duration ) seconds, based on the rate
+// measured on the previous pass. Small maps thus get a fine dense pass, very large
+// maps a light one (or none).
+#define RAY_FLAG_AUTO       16

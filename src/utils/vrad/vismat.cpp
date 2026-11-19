@@ -8,7 +8,7 @@
 
 #include "vrad.h"
 #include "vrad_gpu.h"
-#include "vrad_gpu.cpp"	// compile avec vismat.cpp (evite de modifier le vcxproj)
+#include "vrad_gpu.cpp"	// compiled as part of vismat.cpp (avoids editing the vcxproj)
 #include "vmpi.h"
 #ifdef MPI
 #include "messbuf.h"
@@ -43,7 +43,7 @@ static __int64 XNow() { LARGE_INTEGER t; QueryPerformanceCounter( &t ); return t
 void VradProf_PrintTransfer()
 {
 	LARGE_INTEGER f; QueryPerformanceFrequency( &f );
-	Msg( "[PROF] transferts : GPU %.2f s, application %.2f s, generation rayons %.2f s (cumule threads), %d lots\n",
+	Msg( "[PROF] transfers: GPU %.2f s, apply %.2f s, ray generation %.2f s (summed over threads), %d batches\n",
 		(double)s_xGpu / f.QuadPart, (double)s_xApply / f.QuadPart, (double)s_xRows / f.QuadPart, (int)s_xBatches );
 }
 
@@ -71,7 +71,7 @@ public:
 
 	void Finish();
 
-	// Mode CUDA : les rayons de plusieurs patchs sont accumules puis traces en un seul lot.
+	// CUDA mode: the rays of several patches are accumulated, then traced in a single batch.
 	void EndPatch( int patchnum, CPatch *patch );
 	bool BatchFull() const { return m_nTests + MAX_PATCHES > m_nCapacity || m_Pending.Count() >= 2048; }
 	void FlushBatch( void (*PatchCB)(int iThread, int patchnum, CPatch *patch), int iThread );
@@ -112,7 +112,7 @@ CTransferMaker::~CTransferMaker()
 	free( m_pGpuOut );
 }
 
-// Calcule la visibilite finale de chaque test. Resultat dans m_pGpuOut (1 = visible) en mode CUDA.
+// Computes the final visibility of each test. In CUDA mode the result is stored in m_pGpuOut (1 = visible).
 void CTransferMaker::Resolve()
 {
 	if ( !g_bUseCUDA || g_bCUDAVerify )
@@ -125,7 +125,7 @@ void CTransferMaker::Resolve()
 	if ( !gpuOk )
 	{
 		if ( !g_bCUDAVerify )
-			Error( "[VRAD GPU] echec du lancement CUDA pendant les transferts\n" );
+			Error( "[VRAD GPU] CUDA launch failed during the transfers\n" );
 		for ( int i = 0; i < m_nTests; ++i )
 			m_pGpuOut[i] = ( m_pResults[i].HitID == -1 || m_pResults[i].HitDistance >= m_pResults[i].ray_length );
 		return;
@@ -137,7 +137,7 @@ void CTransferMaker::Resolve()
 		{
 			bool cpuFree = ( m_pResults[i].HitID == -1 || m_pResults[i].HitDistance >= m_pResults[i].ray_length );
 			mismatches += ( ( m_pGpuOut[i] != 0 ) != cpuFree );
-			m_pGpuOut[i] = cpuFree;	// la verification n'altere pas le resultat
+			m_pGpuOut[i] = cpuFree;	// verification keeps the CPU result
 		}
 		VradGPU_AddVerifyStats( m_nTests, mismatches );
 	}
@@ -525,7 +525,7 @@ void BuildVisLeafs_Cluster(
 
 			if ( g_bUseCUDA )
 			{
-				// les transferts de ce patch seront crees au prochain FlushBatch
+				// this patch's transfers are created by the next FlushBatch
 				transferMaker.EndPatch( patchnum, patch );
 				if ( transferMaker.BatchFull() )
 					transferMaker.FlushBatch( PatchCB, threadnum );

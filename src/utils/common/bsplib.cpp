@@ -1847,11 +1847,11 @@ void ValidateLump( int lump, int length, int size, int forceVersion )
 }
 
 //-----------------------------------------------------------------------------
-// Controle de capacite : CopyLump copie le lump par memcpy SANS borne vers des
-// tableaux statiques de taille MAX_MAP_*. Un lump plus grand que le tableau
-// ecrase la memoire voisine en silence, et le BSP reecrit est corrompu (cas
-// reel : 8604 brushes pour MAX_MAP_BRUSHES=8192 -> crash "OUT OF MEMORY" du
-// moteur). On refuse donc explicitement toute carte qui depasse une limite.
+// Capacity check: CopyLump memcpy's the lump WITHOUT any bounds check into
+// static arrays of size MAX_MAP_*. A lump larger than its array silently
+// overwrites the neighbouring memory and the rewritten BSP is corrupted (real
+// case: 8604 brushes with MAX_MAP_BRUSHES=8192 -> engine "OUT OF MEMORY"
+// crash). Any map that exceeds a limit is therefore rejected explicitly.
 //-----------------------------------------------------------------------------
 static void CheckLumpCapacity( int lump, int elemSize, int capacity, const char *pArrayName )
 {
@@ -1860,8 +1860,8 @@ static void CheckLumpCapacity( int lump, int elemSize, int capacity, const char 
 	unsigned int count = (unsigned int)g_pBSPHeader->lumps[lump].filelen / (unsigned int)elemSize;
 	if ( count > (unsigned int)capacity )
 	{
-		Error( "Lump %d (%s) : %u elements, limite %d depassee.\n"
-			"Augmenter la limite MAX_MAP_* correspondante dans public/bspfile.h.\n",
+		Error( "Lump %d (%s): %u elements, limit of %d exceeded.\n"
+			"Increase the matching MAX_MAP_* limit in public/bspfile.h.\n",
 			lump, pArrayName, count, capacity );
 	}
 }
@@ -2068,7 +2068,7 @@ int LoadLeafs( void )
 			int count = length / size;
 #if !defined( BSP_USE_LESS_MEMORY )
 			if ( count > MAX_MAP_LEAFS )
-				Error( "LUMP_LEAFS : %d feuilles, limite MAX_MAP_LEAFS (%d) depassee.\n", count, MAX_MAP_LEAFS );
+				Error( "LUMP_LEAFS: %d leaves, MAX_MAP_LEAFS limit (%d) exceeded.\n", count, MAX_MAP_LEAFS );
 #endif
 
 			void *pSrcBase = ( ( byte * )g_pBSPHeader + g_pBSPHeader->lumps[LUMP_LEAFS].fileofs );
@@ -2245,10 +2245,10 @@ void LoadBSPFile( const char *filename )
 {
 	OpenBSPFile( filename );
 
-	// Capacite des tableaux statiques (voir CheckLumpCapacity). Les lumps
-	// charges dans des CUtlVector sont dimensionnes dynamiquement : rien a
-	// verifier. Les lumps de feuilles sont verifies a l'element pres plus bas,
-	// leur taille disque dependant de la version du lump.
+	// Static array capacity (see CheckLumpCapacity). Lumps loaded into
+	// CUtlVectors are sized dynamically, so there is nothing to check. Leaf
+	// lumps are checked per element further down, because their on-disk size
+	// depends on the lump version.
 	CHECK_LUMP_CAPACITY( LUMP_MODELS, dmodels );
 	CHECK_LUMP_CAPACITY( LUMP_VERTEXES, dvertexes );
 	CHECK_LUMP_CAPACITY( LUMP_PLANES, dplanes );

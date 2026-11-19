@@ -310,7 +310,7 @@ public:
 	}
 };
 
-// Marque les feuilles BSP qui touchent la boite d'un displacement (meme test que l'insertion).
+// Marks the BSP leaves touched by a displacement's bounding box (same test as the insertion).
 void CVRadDispMgr::MarkDispLeaves( unsigned char *pLeafFlags )
 {
 	CMarkLeafEnum e;

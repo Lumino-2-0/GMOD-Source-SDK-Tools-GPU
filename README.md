@@ -69,20 +69,56 @@ vvis_gpu.exe [options] my_map.bsp
 | Option | Effect |
 |---|---|
 | `-cuda` / `-opencl` / `-cpu` | Force the backend (default: CUDA, then OpenCL, then CPU) |
-| `-final` | Two passes (4 then 8 points per ring), more complete but slower |
+| `-final` | More precise: full ring pass, then denser sampling (up to 256 points per portal) with a larger time budget |
 | `-fast` | No raycast, just `portalflood` (huge PVS, very fast) |
-| `-Ray <n>` | Points per portal ring (default 4, nothing changes past 8) |
-| `-RaycastType 1` | Denser sampling (~+25%) |
-| `-Pass 0:Ray=4,1:Ray=8` | Custom passes |
+| `-Ray <n>` | One ring pass only, n points per ring (default 4, nothing changes past 8) |
+| `-RaycastType 1` | One ring pass only, denser |
+| `-Pass 0:Ray=4,1:Dense=64` | Custom passes (`Ray=<n>`, `RaycastType=<0-1>`, `Dense=<points>` or `Auto=<max points>`) |
+| `-debug` | Detailed GPU output (device, each pass, candidate pairs) |
+| `-nocolor` | Plain text output (also `NO_COLOR=1`; `FORCE_COLOR=1` keeps colors when redirected) |
+| `-noupdate` | Skip the update check at startup (also `VVIS_GPU_NOUPDATE=1`) |
 
 The idea: instead of Valve's `RecursiveLeafFlow`, rays are shot from one portal to another
-through the leafs. If a ray gets through, the pair is visible. It only **adds** visibility,
-never removes it: worst case you render a bit too much, never a hole in the map.
+through the leafs. If one ray gets through, the pair is visible. By default there are two
+passes:
 
-⚠️ It is **not** the same result as Valve's VVIS. It works fine on normal maps, but in areas
-full of holes (think a ruined house), the PVS can be noticeably larger than with the original
-VVIS.
+1. **Rings**: the centre of the portal plus rings towards its corners, stopping at the first
+   ray that gets through.
+2. **Dense sampling** on the pairs the first pass could not prove. The number of points
+   (up to 128 per portal) adapts to a time budget of about 25 % of the first pass (at least
+   1 s): full on small maps, light or skipped on huge ones, so compile time stays close to the
+   first pass.
 
+Rays may not graze portal edges, samples stay slightly inside the portal corners, and the
+result is clamped to `portalflood`, so a ray can't "leak" through the corner of a wall.
+
+Compared with Valve's VVIS (`-cpu -final`), on my test maps the GPU never marks as visible a
+pair that the CPU hides, and it misses only a few pairs behind very narrow openings (cluster
+pairs missing compared with the CPU):
+
+| Map | v0.1 | Default | `-final` |
+|---|---|---|---|
+| `campaign_1` | 92 | 8 | 8 |
+| `gm_teste_vvis` | 2968 | 910 | 562 |
+
+On `gm_kindercity_night` (6,722 clusters, RTX 4090) the whole VVIS takes about 28 s (about
+60 s for v0.1). If you ever see a hole in the world, try `-final`, and please open an issue
+with the position (`getpos`).
+
+At the end, every mode (GPU, `-cpu`, `-fast`) prints the same `PVS final: x%.` line: the share
+of the map visible from an average cluster (lower means more culling). On `campaign_1`: GPU
+41.96 %, CPU 42.11 %, `-fast` 65.78 %. The CPU line `Optimized: N visible clusters (x%)`
+counts one-way links removed by the final crosscheck, not the size of the PVS, so the GPU only
+prints it with `-debug`.
+
+The console output is in color with an ASCII-art banner and a single `PortalFlow_RayGPU`
+progress bar (plain text when redirected, and in the `.log`).
+
+**Updates:** at startup `vvis_gpu.exe` checks the
+[GitHub tags](https://github.com/Lumino-2-0/GMOD-Source-SDK-Tools-GPU/tags). If a tag is newer
+than the exe and its release has a download, it downloads it, replaces itself (the old exe is
+kept as `vvis_gpu.exe.old` until the next start) and restarts with the same arguments. Without
+network, or if the exe sits in a folder it can't write to, it just keeps the current version.
 ## Building
 
 Visual Studio 2022 or newer (C++ desktop, MSVC, Windows SDK), **Release x64**. The CUDA toolkit
@@ -111,6 +147,8 @@ VVIS:
 | `src/utils/vrad/vradstaticprops.cpp` | Static prop lighting wired to the GPU |
 | `src/utils/vvis/flow_gpu_host.cpp` | Host side of VVIS's GPU code (CUDA + OpenCL, passes) |
 | `src/utils/vvis/flow_gpu_kernel.cu` | VVIS kernel (the idea is explained at the top) |
+| `src/utils/vvis/vvis_ui.cpp` | VVIS console output (colors, banner, progress bar) |
+| `src/utils/vvis_launcher/vvis_updater.cpp` | Startup update check and self-update from GitHub |
 | `src/utils/*_launcher/` | Launchers embedding the DLLs |
 | `tools/` | Small Python scripts: PVS from a point, lightmap sizes, crash symbols |
 

@@ -2,16 +2,17 @@
 //
 // Purpose: Single-executable bootstrap for VRAD GPU.
 //
-// vrad_gpu.exe embarque tier0, vstdlib, filesystem_stdio et vrad_dll en
-// RCDATA (embedded_dlls.rc). Au lancement on les extrait dans
-// %LOCALAPPDATA%\vrad_gpu\<hash>, puis on charge vrad_dll.dll comme le
-// vrad_launcher d'origine. Un seul exe a distribuer.
+// vrad_gpu.exe embeds tier0, vstdlib, filesystem_stdio and vrad_dll as
+// RCDATA resources (embedded_dlls.rc). At startup they are extracted to
+// %LOCALAPPDATA%\vrad_gpu\<hash>, then vrad_dll.dll is loaded the same way
+// the original vrad_launcher does it. Only one exe has to be distributed.
 //
-// GMod est detecte via Steam (registre + libraryfolders.vdf) : -game est
-// ajoute tout seul si absent. -gamebin = utiliser les DLL x64 du jeu.
+// GMod is located through Steam (registry + libraryfolders.vdf): -game is
+// added automatically when missing. When GMod is found, its x64 runtime DLLs
+// are used by default; -embeddedbin forces the embedded copies.
 //
-// Pas de lien vers tier0/vstdlib ici (tier0 exporte des donnees, donc pas
-// de /DELAYLOAD possible) : uniquement du Win32 brut LoadLibrary/GetProcAddress.
+// No link to tier0/vstdlib here (tier0 exports data, so /DELAYLOAD is not
+// possible): only raw Win32 LoadLibrary/GetProcAddress.
 //
 //=============================================================================//
 
@@ -216,8 +217,8 @@ static bool MapLivesInsideGameDir( const char *pMapArg )
 }
 
 // Uses the installed game's x64 tier0/vstdlib/filesystem_stdio instead of
-// the embedded copies. Only enabled on request (-gamebin): ABI compatibility
-// between GMod's runtime and this SDK build is not proven.
+// the embedded copies. Used by default when GMod is found; -embeddedbin
+// forces the embedded copies instead.
 static bool CopyGameRuntimeDlls( const char *pGameRoot, const char *pRuntimeDir )
 {
 	static const char *s_Names[] = { "tier0.dll", "vstdlib.dll", "filesystem_stdio.dll" };
@@ -359,8 +360,8 @@ int main(int argc, char* argv[])
 	char szGameRoot[MAX_PATH] = { 0 };
 	char szModDir[MAX_PATH] = { 0 };
 	bool bHaveGame = FindGarrysMod( szGameRoot, sizeof( szGameRoot ), szModDir, sizeof( szModDir ) );
-	// vrad_dll est lie au tier0 de GMod : son runtime est utilise par defaut quand
-	// GMod est detecte (les DLL embarquees servent de secours, ou -embeddedbin).
+	// vrad_dll links against GMod's tier0, so GMod's runtime is used by default when
+	// GMod is found (the embedded DLLs are the fallback, or can be forced with -embeddedbin).
 	bool bUseGameBin = !HasArg( argc, argv, "-embeddedbin" );
 
 	bool bInjectGame = argc >= 2 && !HasArg( argc, argv, "-game" ) && !HasArg( argc, argv, "-vproject" )

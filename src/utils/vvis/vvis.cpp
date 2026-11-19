@@ -12,6 +12,7 @@
 #include "threads.h"
 #include "stdlib.h"
 #include "flow_gpu.h"
+#include "vvis_ui.h"
 #include "pacifier.h"
 #include "tier1/strtools.h"
 #include "collisionutils.h"
@@ -53,16 +54,35 @@ bool		g_bUseRadius = false;
 double		g_VisRadius = 4096.0f * 4096.0f;
 
 bool		g_bLowPriority = false;
-// Precision du raycast GPU : g_PassSamples[k] = nombre max de sommets de winding
-// utilises par anneau a la passe k. Points par portail = 1 + 2 * min(n, sommets).
-//   -RaycastType 0 : n = 4 (defaut, 9 points, jusqu'a 81 rayons par paire)
-//   -RaycastType 1 : n = 5 (11 points, environ 25 % d'echantillons en plus)
-//   -Ray <n>       : n choisi librement
-//   -Pass / -final : plusieurs passes, les suivantes ne reprennent que les paires
-//                    candidates pas encore prouvees visibles (voir flow_gpu_host.cpp)
+// GPU raycast precision: g_Passes[k] describes pass k (see flow_gpu.h).
+//   Ring pass : center + rings of points towards the winding vertices.
+//   Dense pass: n points spread over the whole portal surface (n*n rays per pair).
+//   Auto pass : dense, but n is chosen by the host from a time budget.
+//   Default: a fast ring pass (stops at the first ray that gets through), then an auto
+//   dense pass that only re-tests the unproven pairs. -final: complete rings, then an
+//   auto dense pass with a larger time budget. -RaycastType / -Ray / -Pass: manual setup.
+//   Each later pass only re-tests the candidate pairs not yet proven visible
+//   (see flow_gpu_host.cpp).
 static const int g_RaycastTypeSamples[2] = { 4, 5 };
-static int		g_PassSamples[16] = { 4 };
-static int		g_NumPasses = 1;
+
+static GPUPassConfig MakeRingPass( int n, int flags, int ringmask )
+{
+	GPUPassConfig c = { n, flags, ringmask, 0.0f, 0.0f };
+	return c;
+}
+
+static GPUPassConfig MakeDensePass( int n, bool bAuto, float budgetRel, float budgetMin )
+{
+	GPUPassConfig c = { n, RAY_FLAG_EXTEND | RAY_FLAG_HALTON | RAY_FLAG_MIRROR | ( bAuto ? RAY_FLAG_AUTO : 0 ), 0, bAuto ? budgetRel : 0.0f, bAuto ? budgetMin : 0.0f };
+	return c;
+}
+
+static GPUPassConfig	g_Passes[16] = {
+	{ 4, RAY_FLAG_EXTEND | RAY_FLAG_MIRROR, 5, 0.0f, 0.0f },
+	{ 128, RAY_FLAG_EXTEND | RAY_FLAG_HALTON | RAY_FLAG_MIRROR | RAY_FLAG_AUTO, 0, 0.25f, 1.0f },
+};
+static int		g_NumPasses = 2;
+static bool		g_bGpuFlowUsed = false;
 
 bool		g_bForceCpuFlow = false;
 
@@ -249,6 +269,31 @@ void ClusterMerge (int clusternum)
 	totalvis += numvis;
 }
 
+// Total number of visible cluster links according to portalflood alone (what -fast gives,
+// before the cross-check): a geometric upper bound, used as a reference for the final PVS.
+static double CountMightSeeLinks( void )
+{
+	byte	*portalvector = (byte *)malloc( portalbytes );
+	byte	*uncompressed = (byte *)malloc( leafbytes );
+	double	total = 0.0;
+	for ( int c = 0; c < portalclusters; c++ )
+	{
+		memset( portalvector, 0, portalbytes );
+		leaf_t *leaf = &leafs[c];
+		for ( int i = 0; i < leaf->portals.Count(); i++ )
+		{
+			portal_t *p = leaf->portals[i];
+			for ( int j = 0; j < portallongs; j++ )
+				((long *)portalvector)[j] |= ((long *)p->portalflood)[j];
+			SetBit( portalvector, (int)( p - portals ) );
+		}
+		total += LeafVectorFromPortalVector( portalvector, uncompressed ) + 1;
+	}
+	free( portalvector );
+	free( uncompressed );
+	return total;
+}
+
 static int CompressAndCrosscheckClusterVis( int clusternum )
 {
 	int		optimized = 0;
@@ -311,21 +356,27 @@ void CalcPortalVis (void)
 		return;
 	}
 
-// Chemin par defaut : raycast sur GPU (CUDA sur NVIDIA, sinon OpenCL).
-// On retombe sur le flow CPU recursif d'origine avec -cpu, s'il n'y a pas de
-// GPU utilisable, ou si le GPU renvoie une erreur.
+// Default path: GPU raycast (CUDA on NVIDIA, otherwise OpenCL).
+// Falls back to the original recursive CPU flow with -cpu, when no usable GPU
+// is found, or when the GPU reports an error.
 if ( !g_bForceCpuFlow )
 {
 bool bDone = false;
 if ( GPU_Init() )
-bDone = GPU_RunPortalFlowRaycast( g_numportals * 2, g_PassSamples, g_NumPasses );
+bDone = GPU_RunPortalFlowRaycast( g_numportals * 2, g_Passes, g_NumPasses );
 GPU_Shutdown();
 if ( bDone )
+{
+g_bGpuFlowUsed = true;
 return;
-Msg( "[VVIS GPU] GPU indisponible - flow CPU recursif d'origine.\n" );
+}
+Warning( "[VVIS GPU] GPU unavailable - using the original recursive CPU flow.\n" );
 }
 
-	RunThreadsOnIndividual (g_numportals*2, true, PortalFlow);
+	VisUI_Label( "PortalFlow:" );
+	const double flowStart = Plat_FloatTime();
+	(RunThreadsOnIndividual) (g_numportals*2, true, PortalFlow);
+	VisUI_LogOnly( " (%i)\n", (int)( Plat_FloatTime() - flowStart ) );
 
 }
 
@@ -349,10 +400,17 @@ CalcVis
 void CalcVis (void)
 {
 	int		i;
-	RunThreadsOnIndividual (g_numportals*2, true, BasePortalVis);
+	VisUI_Label( "BasePortalVis:" );
+	const double baseStart = Plat_FloatTime();
+	(RunThreadsOnIndividual) (g_numportals*2, true, BasePortalVis);
+	VisUI_LogOnly( " (%i)\n", (int)( Plat_FloatTime() - baseStart ) );
 	
 
 	SortPortals ();
+
+	double mightSeeLinks = 0.0;
+	if ( !fastvis )
+		mightSeeLinks = CountMightSeeLinks();
 
 	CalcPortalVis ();
 
@@ -373,8 +431,22 @@ void CalcVis (void)
 	}
 
 		
-	Msg ("Optimized: %d visible clusters (%.2f%%)\n", count, count*100.0/totalvis);
-	Msg ("Total clusters visible: %i\n", totalvis);
+	// "Optimized" = one-way links removed by the cross-check, not the PVS size. The GPU PVS
+	// is symmetric by construction (mirrored pairs), so this number would always be 0 there:
+	// it is only shown in CPU mode (or with -debug). "PVS final" is printed in every mode.
+	if ( !g_bGpuFlowUsed || g_bVisDebug )
+		Msg ("Optimized: %d visible clusters (%.2f%%)\n", count, count*100.0/totalvis);
+	const double finalLinks = (double)totalvis - (double)count;
+	const double possibleLinks = (double)portalclusters * (double)portalclusters;
+	VisUI_PvsFinal( finalLinks * 100.0 / possibleLinks );
+	if ( g_bVisDebug )
+	{
+		Msg ("PVS details: %.0f / %.0f cluster links", finalLinks, possibleLinks);
+		if ( mightSeeLinks > 0.0 )
+			Msg (", %.2f%% hidden vs -fast", 100.0 - finalLinks * 100.0 / mightSeeLinks);
+		Msg ("\n");
+	}
+	VisUI_Msg (UI_WHITE, "Total clusters visible: %i\n", totalvis);
 	Msg ("Average clusters visible: %i\n", totalvis / portalclusters);
 }
 
@@ -916,10 +988,10 @@ int ParseCommandLine( int argc, char **argv )
 		}
 		else if (!Q_stricmp(argv[i], "-final"))
 		{
-			g_PassSamples[0] = 4;
-			g_PassSamples[1] = 8;
+			g_Passes[0] = MakeRingPass( 4, RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR, 7 );
+			g_Passes[1] = MakeDensePass( 256, true, 1.0f, 5.0f );
 			g_NumPasses = 2;
-			Msg( "final mode: pass 1 = default (4), pass 2 = refinement (8) on unproven pairs only\n" );
+			Msg( "final mode: full ring pass, then dense sampling (up to 256 points/portal, larger time budget) on unproven pairs only\n" );
 		}
 		else if (!Q_stricmp(argv[i], "-RaycastType") && i + 1 < argc)
 		{
@@ -929,9 +1001,9 @@ int ParseCommandLine( int argc, char **argv )
 				Warning( "-RaycastType must be 0 or 1\n" );
 				return 100000;
 			}
-			g_PassSamples[0] = g_RaycastTypeSamples[t];
+			g_Passes[0] = MakeRingPass( g_RaycastTypeSamples[t], RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR, 7 );
 			g_NumPasses = 1;
-			Msg( "RaycastType %d (%d samples cap)\n", t, g_PassSamples[0] );
+			Msg( "RaycastType %d (%d samples cap)\n", t, g_Passes[0].samples );
 		}
 		else if (!Q_stricmp(argv[i], "-Ray") && i + 1 < argc)
 		{
@@ -941,14 +1013,15 @@ int ParseCommandLine( int argc, char **argv )
 				Warning( "-Ray must be >= 1\n" );
 				return 100000;
 			}
-			g_PassSamples[0] = n;
+			g_Passes[0] = MakeRingPass( n, RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR, 7 );
 			g_NumPasses = 1;
 			Msg( "Custom raycast samples cap = %d\n", n );
 		}
 		else if (!Q_stricmp(argv[i], "-Pass") && i + 1 < argc)
 		{
-			// Accepte "0:RaycastType=1,1:RaycastType=3" (virgules/espaces, un ou plusieurs arguments)
-			// ou "0:Ray=6". Les arguments suivants contenant ':' sont aussi consommes.
+			// Accepts "0:RaycastType=1,1:Dense=64" (comma/space separated, one or more arguments)
+			// or "0:Ray=6". Following arguments that contain ':' are consumed too. The index
+			// before ':' is not used: passes are added in the order given.
 			g_NumPasses = 0;
 			while ( i + 1 < argc && argv[i+1][0] != '-' && strchr( argv[i+1], ':' ) )
 			{
@@ -966,17 +1039,22 @@ int ParseCommandLine( int argc, char **argv )
 					*colon = 0; *eq = 0;
 					const char *key = colon + 1;
 					int val = atoi( eq + 1 );
-					int s;
+					GPUPassConfig s;
+					const int ringFlags = RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR;
 					if ( !Q_stricmp( key, "RaycastType" ) && val >= 0 && val <= 1 )
-						s = g_RaycastTypeSamples[val];
+						s = MakeRingPass( g_RaycastTypeSamples[val], ringFlags, 7 );
 					else if ( !Q_stricmp( key, "Ray" ) && val >= 1 )
-						s = val;
+						s = MakeRingPass( val, ringFlags, 7 );
+					else if ( !Q_stricmp( key, "Dense" ) && val >= 1 )
+						s = MakeDensePass( val, false, 0.0f, 0.0f );
+					else if ( !Q_stricmp( key, "Auto" ) && val >= 1 )
+						s = MakeDensePass( val, true, 0.5f, 2.0f );
 					else
 					{
 						Warning( "Invalid -Pass value \"%s=%s\"\n", key, eq + 1 );
 						return 100000;
 					}
-					g_PassSamples[g_NumPasses++] = s;
+					g_Passes[g_NumPasses++] = s;
 				}
 			}
 			if ( g_NumPasses == 0 )
@@ -994,6 +1072,14 @@ int ParseCommandLine( int argc, char **argv )
 		{
 			Msg ("verbose = true\n");
 			verbose = true;
+		}
+		else if (!Q_stricmp(argv[i], "-debug"))
+		{
+			g_bVisDebug = true;
+		}
+		else if (!Q_stricmp(argv[i], "-nocolor") || !Q_stricmp(argv[i], "-noupdate"))
+		{
+			// -nocolor is read by VisUI_Init, -noupdate by the launcher.
 		}
 		else if( !Q_stricmp( argv[i], "-radius_override" ) )
 		{
@@ -1071,7 +1157,9 @@ void PrintUsage( int argc, char **argv )
 		"\n"
 		"GPU options:\n"
 		"\n"
-		"  (default)       : GPU raycast (CUDA on NVIDIA, else OpenCL), CPU if no GPU\n"
+		"  (default)       : GPU raycast (CUDA on NVIDIA, else OpenCL), CPU if no GPU.\n"
+		"                    One progress bar (PortalFlow_RayGPU: 0...10) covers all\n"
+		"                    GPU passes.\n"
 		"  VVIS_GPU_DEVICE=<n> (env) : use the n-th GPU\n"
 		"  -opencl         : Force OpenCL (NVIDIA, AMD, Intel)\n"
 		"  -cuda           : Force CUDA (NVIDIA)\n"
@@ -1079,19 +1167,35 @@ void PrintUsage( int argc, char **argv )
 		"\n"
 		"Raycast precision (GPU):\n"
 		"\n"
-		"  -final             : Smart multi-pass (like vrad -final): default pass, then a\n"
-		"                       refinement pass (cap 8) re-testing only unproven pairs.\n"
-		"  -RaycastType <0-1> : 0 = default (cap 4, 9 points/portal)\n"
-		"                       1 = more precise (cap 5, 11 points/portal, ~+25%% samples)\n"
-		"  -Ray <n>           : Custom sample cap per ring (1 + 2*min(n, vertices)\n"
-		"                       points per portal). Default: 4 (= type 0, 9 points,\n"
-		"                       up to 81 rays per portal pair). Type 1 = 5.\n"
+		"  Default            : pass 1 = fast rings (center + vertex rings, stops at the\n"
+		"                       first ray that gets through), pass 2 = dense sampling on\n"
+		"                       the pairs pass 1 could not prove. Pass 2 adapts its point\n"
+		"                       count (up to 128/portal) to a time budget (about 25% of\n"
+		"                       pass 1, at least 1 s): fine on small maps, light or\n"
+		"                       skipped on huge maps. Symmetric pairs are tested once.\n"
+		"  -final             : More precise: complete ring pass, then dense sampling up\n"
+		"                       to 256 points/portal with a larger time budget (1x the\n"
+		"                       previous pass, at least 5 s). Still bounded on huge maps.\n"
+		"  -RaycastType <0-1> : Single exhaustive ring pass. 0 = cap 4 (13 points/portal)\n"
+		"                       1 = cap 5 (16 points on pentagons and more)\n"
+		"  -Ray <n>           : Single exhaustive ring pass, custom cap per ring (1 + 3*\n"
+		"                       min(n, vertices) points per portal).\n"
 		"                       Values above ~8 (max portal vertices) have no effect.\n"
-		"  -Pass <list>       : Several passes, e.g. -Pass 0:Ray=4,1:RaycastType=1\n"
-		"                       (or 0:Ray=2,1:Ray=8). Pass N+1 only re-tests the\n"
+		"  -Pass <list>       : Several passes, e.g. -Pass 0:Ray=4,1:Dense=64\n"
+		"                       (RaycastType=<0-1>, Ray=<n>, Dense=<points> or\n"
+		"                       Auto=<max points> per pass). Pass N+1 only re-tests the\n"
 		"                       candidate pairs not yet proven visible by earlier\n"
 		"                       passes; results are merged (never removes visibility).\n"
-		"                       Each pass prints a progress bar, % and time.\n"
+		"\n"
+		"Output and updates:\n"
+		"\n"
+		"  -debug          : GPU details: device, each pass (points, candidate pairs,\n"
+		"                    progress bar, % and time), PVS links vs -fast.\n"
+		"  -nocolor        : No colors / banner (also NO_COLOR=1). Colors are only used\n"
+		"                    in a real console, never in the .log or in Hammer.\n"
+		"  -noupdate       : Skip the startup update check (also VVIS_GPU_NOUPDATE=1).\n"
+		"                    By default vvis_gpu checks the GitHub tags at startup and,\n"
+		"                    if a newer release exists, replaces itself and restarts.\n"
 		"\n"
 		"Common options:\n"
 		"\n"
@@ -1118,7 +1222,8 @@ int RunVVis( int argc, char **argv )
 	double		start, end;
 
 
-	Msg( "Valve + Lumastor-IronKnight Software - vvis_gpu.exe (%s)\n", __DATE__ );
+	VisUI_Init( argc, argv );
+	VisUI_Banner();
 
 	verbose = false;
 
@@ -1158,7 +1263,7 @@ int RunVVis( int argc, char **argv )
 
 	ThreadSetDefault ();
 
-	Msg ("reading %s\n", mapFile);
+	VisUI_Msg (UI_GREY, "reading %s\n", mapFile);
 	LoadBSPFile (mapFile);
 	if (numnodes == 0 || numfaces == 0)
 		Error ("Empty map");
@@ -1191,7 +1296,7 @@ int RunVVis( int argc, char **argv )
 	}
 	strcat (portalfile, ".prt");
 
-	Msg ("reading %s\n", portalfile);
+	VisUI_Msg (UI_GREY, "reading %s\n", portalfile);
 	LoadPortals (portalfile);
 
 	// don't write out results when simply doing a trace
@@ -1210,7 +1315,7 @@ int RunVVis( int argc, char **argv )
 		visdatasize = vismap_p - dvisdata;
 		Msg ("visdatasize:%i  compressed from %i\n", visdatasize, originalvismapsize*2);
 
-		Msg ("writing %s\n", mapFile);
+		VisUI_Msg (UI_MAGENTA, "writing %s\n", mapFile);
 		WriteBSPFile (mapFile);
 	}
 	else
@@ -1227,7 +1332,7 @@ int RunVVis( int argc, char **argv )
 
 	char str[512];
 	GetHourMinuteSecondsString( (int)( end - start ), str, sizeof( str ) );
-	Msg( "%s elapsed\n", str );
+	VisUI_Footer( str );
 
 	ReleasePakFileLumps();
 	DeleteCmdLine( argc, argv );

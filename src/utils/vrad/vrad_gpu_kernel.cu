@@ -1,16 +1,18 @@
 // vrad_gpu_kernel.cu
 //
-// Noyau CUDA de visibilite point-a-point pour VRAD (phase des transferts,
-// CTransferMaker / BuildVisLeafs).
+// CUDA kernels for VRAD.
 //
-// Reproduit, pour UN rayon, RayTracingEnvironment::Trace4Rays (raytrace.cpp) :
-// meme k-d tree, memes tests d'intersection, memes epsilons (1e-10).
-// Resultat = 1 si le rayon est LIBRE (transfert cree), 0 sinon, soit le test de
-// CTransferMaker::Finish : HitID == -1 || HitDistance >= ray_length.
+// TraceVisKernel: point-to-point visibility, used for the transfers
+// (CTransferMaker / BuildVisLeafs) and for direct-light shadow rays.
+// Reproduces RayTracingEnvironment::Trace4Rays (raytrace.cpp) for ONE ray:
+// same k-d tree, same intersection tests, same epsilons (1e-10).
+// In mode 0 the result is 1 if the ray is UNOBSTRUCTED (transfer created) and
+// 0 otherwise, i.e. the CTransferMaker::Finish test:
+// HitID == -1 || HitDistance >= ray_length.
 //
-// Difference connue : le CPU calcule 1/x avec rcpps + Newton ; ici division IEEE.
+// Known difference: the CPU computes 1/x with rcpps + Newton; here IEEE division is used.
 //
-// Compile en PTX par vrad_build_ptx.ps1 (vrad_gpu_kernel_ptx.h).
+// Compiled to PTX by vrad_build_ptx.ps1 (vrad_gpu_kernel_ptx.h).
 
 struct GpuTri
 {
@@ -167,7 +169,7 @@ extern "C" __global__ void TraceVisKernel(
 		tmax = stackMax[sp];
 		++sp;
 	}
-	// mode 1 : libre si aucun impact, ou si l'impact le plus proche est du ciel (TRACE_ID_SKY)
+	// mode 1: unobstructed if nothing was hit, or if the nearest hit is sky (TRACE_ID_SKY)
 	if ( mode == 1 && bestT < 1.0e22f && !( bestId & 0x01000000 ) )
 	{
 		out[i] = 0;
@@ -177,17 +179,17 @@ extern "C" __global__ void TraceVisKernel(
 }
 
 // ============================================================================
-// Eclairage indirect des props statiques (ComputeIndirectLightingAtPoint).
+// IndirectKernel: static prop indirect lighting (ComputeIndirectLightingAtPoint).
 //
-// Reproduit CLightSurface::FindIntersection (vraddetailprops.cpp) :
-// EnumerateNodesAlongRay_R (bsplib.cpp) en version ITERATIVE (pile explicite),
-// EnumerateNode / EnumerateLeaf, TestPointAgainstSurface, ciel sur noeud,
-// puis echantillonnage du lightmap, reflectivite et attenuation 1/(1+d^2).
+// Reproduces CLightSurface::FindIntersection (vraddetailprops.cpp):
+// EnumerateNodesAlongRay_R (bsplib.cpp) as an ITERATIVE version (explicit stack),
+// EnumerateNode / EnumerateLeaf, TestPointAgainstSurface, sky faces on nodes,
+// then lightmap sampling, reflectivity and 1/(1+d^2) attenuation.
 //
-// Difference volontaire : le CLightSurface CPU conserve m_HitFrac d'un rayon au
-// suivant (bogue) ; ici chaque rayon part de 1.0.
-// Les rayons qui traversent une feuille contenant un displacement sont rendus
-// au CPU (w = 2).
+// Intentional difference: the CPU CLightSurface keeps m_HitFrac from one ray to
+// the next (bug); here every ray starts at 1.0.
+// Rays that cross a leaf containing a displacement are handed back to the
+// CPU (w = 2).
 // ============================================================================
 
 struct GpuBspNode { float nx, ny, nz, dist; int type; int ch0, ch1; int firstface, numfaces; };
@@ -277,7 +279,7 @@ __device__ bool IndPointInSky( const IndirectData &D, const GpuBspFace &f, float
 	return true;
 }
 
-// rays : 6 floats (origine, delta). out : 4 floats (r,g,b, w) ; w = 0 rien, 1 contribution, 2 repli CPU.
+// rays: 6 floats (origin, delta). out: 4 floats (r, g, b, w); w = 0 no contribution, 1 contribution, 2 CPU fallback.
 extern "C" __global__ void IndirectKernel( IndirectData D, const float *rays, float *out, int numRays )
 {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;

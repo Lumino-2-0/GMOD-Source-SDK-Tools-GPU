@@ -254,6 +254,8 @@
     <ClInclude Include="..\..\public\mathlib\vector.h" />
     <ClInclude Include="..\..\public\mathlib\vector2d.h" />
     <ClInclude Include="flow_gpu.h" />
+    <ClInclude Include="vvis_ui.h" />
+    <ClInclude Include="flow_gpu_kernel.h" />
     <ClInclude Include="vis.h" />
     <ClInclude Include="..\..\public\vstdlib\vstdlib.h" />
     <ClInclude Include="..\..\public\wadtypes.h" />
@@ -280,6 +282,7 @@
     <ClCompile Include="..\common\tools_minidump.cpp" />
     <ClCompile Include="vvis.cpp" />
     <ClCompile Include="flow_gpu_host.cpp" />
+    <ClCompile Include="vvis_ui.cpp" />
     <ClCompile Include="WaterDist.cpp" />
     <ClCompile Include="..\..\public\zip_utils.cpp" />
   </ItemGroup>
@@ -288,7 +291,6 @@
   <ItemGroup>
     <None Include="..\..\..\..\..\..\..\..\MAP_SERVEUR\Kindercity\Gm_Kindercity_Night\gm_kindercity_night.vmf" />
     <None Include="..\..\vpc_scripts\loadaddress.vpc" />
-    <ClInclude Include="flow_gpu_kernel.h" />
     <None Include="build_ptx.ps1" />
     <None Include="flow_gpu_kernel.cu" />
     <None Include="_vpc_\manifest_vvis_dll\win64\manifest.txt" />

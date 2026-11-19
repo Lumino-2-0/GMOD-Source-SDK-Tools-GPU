@@ -653,9 +653,9 @@ static void ComputeAmbientLightingAtPoint( int iThread, const Vector &origin, Ve
 }
 
 //-----------------------------------------------------------------------------
-// Version par lot (un seul appel GPU pour tous les sommets d'un prop).
-// Memes echantillons et meme ordre que ComputeIndirectLightingAtPoint ;
-// pValid[i] = false si un rayon doit etre refait sur le CPU.
+// Batched version (a single GPU call for all the vertices of a prop).
+// Same samples and same order as ComputeIndirectLightingAtPoint;
+// pValid[i] = false if a ray of vertex i must be redone on the CPU.
 //-----------------------------------------------------------------------------
 bool ComputeIndirectLightingBatchGPU( const Vector *pPos, const Vector *pNormal, int n,
 									  bool force_fast, bool bIgnoreNormals, Vector *pOut, bool *pValid )

@@ -1155,7 +1155,7 @@ struct PropDirectItem_t { Vector contrib; int callIdx; };
 struct PropDirectRec_t
 {
 	CUtlVector<PropDirectItem_t> items;
-	CUtlVector<int> vertStart;	// debut des items par sommet, +1 fin
+	CUtlVector<int> vertStart;	// first item of each vertex, plus a final end index
 	CUtlVector<unsigned char> vertComplex;
 	bool curComplex;
 };
@@ -1175,7 +1175,7 @@ void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &out
 	int cluster = ClusterFromPoint( position );
 	for ( directlight_t *dl = activelights; dl != NULL; dl = dl->next )
 	{
-		// styleMode 0 : lumieres sans style seulement ; 1 : lumieres a style seulement
+		// styleMode 0: unstyled lights only; 1: styled lights only
 		if ( ( dl->light.style != 0 ) != ( styleMode == 1 ) )
 		{
 			continue;
@@ -1238,9 +1238,9 @@ void ComputeDirectLightingAtPoint( Vector &position, Vector &normal, Vector &out
 }
 
 //-----------------------------------------------------------------------------
-// Un prop statique n'a qu'une couleur par sommet : il ne peut pas suivre un style de lumiere.
-// Detecte les props eclaires surtout par des lumieres a style (interrupteurs) : ils seraient
-// cuits noirs (les lumieres a style sont ignorees). On les bascule alors en eclairage dynamique.
+// A static prop has a single color per vertex, so it cannot follow a light style.
+// Detects props lit mostly by styled (switchable) lights: they would be baked black
+// (styled lights are skipped), so they are switched to dynamic lighting instead.
 //-----------------------------------------------------------------------------
 extern bool g_bNoPropMark;
 static volatile LONG s_nPropsMarked = 0;
@@ -1421,7 +1421,7 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 			pLump->m_Flags |= kMark;
 			LONG n = InterlockedIncrement( &s_nPropsMarked );
 			if ( n <= 20 )
-				Warning( "[VRAD GPU] Avertissement : le prop statique %d (%s) est eclaire par des lumieres a style (interrupteurs) et serait reste noir ; il est passe en eclairage dynamique (-NoPropMark pour desactiver).\n", prop_index, dict.m_ModelName );
+				Warning( "[VRAD GPU] Warning: static prop %d (%s) is lit by styled (switchable) lights and would have been baked black; it now uses dynamic lighting (-NoPropMark to disable).\n", prop_index, dict.m_ModelName );
 			return;
 		}
 	}
@@ -1437,8 +1437,10 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 	AngleMatrix(prop.m_Angles, prop.m_Origin, matPos);
 	AngleMatrix(prop.m_Angles, matNormal);
 
-	// CUDA : pre-passe qui enregistre les rayons d'ombre de la lumiere directe des sommets
-	// (meme ordre que la boucle principale), un lot GPU, puis rejeu par TestLine.
+	// CUDA: pre-pass that records the direct-light shadow rays of every vertex (same order
+	// as the main loop) and traces them in one GPU batch. The main loop then sums the
+	// recorded per-light contributions using the GPU results, or recomputes the vertex on
+	// the CPU when that is not possible.
 	static __declspec( thread ) VradRayQueue_t *s_tlsPropQueue = NULL;
 	VradRayQueue_t *gpuQueue = NULL;
 	PropDirectRec_t directRec;
@@ -1500,8 +1502,8 @@ void CVradStaticPropMgr::ComputeLighting( CStaticProp &prop, int iThread, int pr
 			gpuQueue = q;
 		}
 	}
-	// CUDA : eclairage indirect de tous les sommets valides du prop en un seul lot GPU
-	// (meme ordre de parcours que la boucle principale).
+	// CUDA: indirect lighting of all the valid vertices of the prop in a single GPU batch
+	// (same traversal order as the main loop).
 	CUtlVector<Vector> indColor;
 	CUtlVector<bool> indValid;
 	int indCursor = 0;
@@ -2056,13 +2058,13 @@ void CVradStaticPropMgr::ComputeLighting( int iThread )
 	{
 		LARGE_INTEGER f; QueryPerformanceFrequency( &f );
 		double inv = 1.0 / (double)f.QuadPart;
-		Warning( "\n[PROF] props (cumule threads) : preGPU %.1f s, direct %.1f s, indirect %.1f s, texels %.1f s\n",
+		Warning( "\n[PROF] props (summed over threads): preGPU %.1f s, direct %.1f s, indirect %.1f s, texels %.1f s\n",
 			 s_tPropPre * inv, s_tPropDirect * inv, s_tPropIndirect * inv, s_tPropTexel * inv );
-		Warning( "[PROF] indirect props : %lld sommets GPU, %lld sommets repasses au CPU\n", s_nIndGPU, s_nIndCPU );
+		Warning( "[PROF] prop indirect lighting: %lld vertices on the GPU, %lld vertices redone on the CPU\n", s_nIndGPU, s_nIndCPU );
 	}
 
 	if ( s_nPropsMarked )
-		Warning( "\n[VRAD GPU] %d props statiques passes en eclairage dynamique (lumieres a style). -NoPropMark pour desactiver.\n", (int)s_nPropsMarked );
+		Warning( "\n[VRAD GPU] %d static props switched to dynamic lighting (styled lights). Use -NoPropMark to disable.\n", (int)s_nPropsMarked );
 
 	// save data to bsp
 	SerializeLighting();

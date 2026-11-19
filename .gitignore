@@ -1,4 +1,4 @@
-# --- Build Visual Studio ---
+# --- Visual Studio build ---
 .vs/
 [Dd]ebug/
 [Rr]elease/
@@ -22,7 +22,7 @@ __vpc__/
 *.vcxproj.bak*
 *.FileListAbsolute.txt
 
-# --- Sorties / debug ---
+# --- Outputs / debug ---
 *.log
 *.mdmp
 *.dmp
@@ -33,30 +33,30 @@ VVIS_Bin/
 VRAD_Logs/
 VVIS_Logs/
 
-# --- Notes de travail perso ---
+# --- Personal work notes ---
 docs/
 .github/copilot-instructions.md
 src/.github/
 src/.vscode/
 .stfolder/
 
-# --- SDK complet non utilise par les outils ---
+# --- Parts of the full SDK not used by the tools ---
 src/game/
 src/materialsystem/
 src/gcsdk/
 
-# --- Cartes de test : seulement les petites ---
+# --- Test maps: only the small ones ---
 map_test/*
 !map_test/map_test_vis.*
 !map_test/Map_Test_Vis.*
 !map_test/gm_teste_vvis.bsp
 !map_test/gm_teste_vvis.prt
 
-# --- libs precompilees du SDK (necessaires au build) ---
+# --- Prebuilt SDK libs (needed for the build) ---
 !src/lib/**
 *.pdb
 !src/thirdparty/**/docs/
 
-# --- Linux : pas supporte ---
+# --- Linux: not supported ---
 **/linux32/
 **/linux64/

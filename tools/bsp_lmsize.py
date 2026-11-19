@@ -1,5 +1,5 @@
-"""Statistiques des tailles de lightmap des faces d'un BSP (detecte les faces > 32 luxels).
-Usage : python bsp_lmsize.py map.bsp
+"""Lightmap size statistics for the faces of a BSP (finds faces larger than 32 luxels).
+Usage: python bsp_lmsize.py map.bsp
 """
 import struct, sys
 
@@ -18,7 +18,7 @@ def main():
         mx = max(mx, w * h)
         if lofs >= 0 and (sz[0] > 32 or sz[1] > 32):
             big.append((k, w, h, dispinfo))
-    print(f"{n} faces, taille max {mx} luxels, faces > 32 : {len(big)}")
+    print(f"{n} faces, max size {mx} luxels, faces > 32: {len(big)}")
     for k, w, h, di in sorted(big, key=lambda x: -x[1] * x[2])[:20]:
         print(f"  face {k}: {w}x{h} ({w*h}) disp {di}")
 

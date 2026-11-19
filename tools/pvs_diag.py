@@ -1,5 +1,5 @@
-"""Diagnostic PVS : cluster d'un point, visibilite A->B, chemin de portails.
-Usage : python pvs_diag.py map.bsp x1 y1 z1 x2 y2 z2
+"""PVS diagnostics: cluster of a point, A->B visibility, portal path.
+Usage: python pvs_diag.py map.bsp x1 y1 z1 x2 y2 z2
 """
 import struct, sys
 from collections import deque
@@ -68,8 +68,8 @@ def main():
     print(f"A leaf {la} cluster {ca} contents {leafs[la][0]} bbox {leafs[la][2]} -> {leafs[la][3]}")
     print(f"B leaf {lb} cluster {cb} contents {leafs[lb][0]} bbox {leafs[lb][2]} -> {leafs[lb][3]}")
     nc, s = pvs(vis, ca)
-    print(f"clusters {nc}, PVS(A) = {len(s)} clusters, B visible depuis A : {cb in s}")
-    # Bornes de chaque cluster
+    print(f"clusters {nc}, PVS(A) = {len(s)} clusters, B visible from A: {cb in s}")
+    # Bounding box of each cluster
     cb_box = {}
     for c, cl, mn, mx in leafs:
         if cl < 0: continue
@@ -77,17 +77,17 @@ def main():
             o = cb_box[cl]; cb_box[cl] = (tuple(map(min, o[0], mn)), tuple(map(max, o[1], mx)))
         else:
             cb_box[cl] = (mn, mx)
-    print(f"bbox cluster A : {cb_box[ca]}")
+    print(f"cluster A bbox: {cb_box[ca]}")
     P = portals(bsp[:-4] + '.prt')
     adj = {}
     for i, (a, b, w) in enumerate(P):
         adj.setdefault(a, []).append((b, i)); adj.setdefault(b, []).append((a, i))
-    print(f"portails du cluster A : {len(adj.get(ca, []))}")
+    print(f"cluster A portals: {len(adj.get(ca, []))}")
     for nb, i in adj.get(ca, []):
         w = P[i][2]
         zs = [p[2] for p in w]
-        print(f"  -> cluster {nb:5d} via portail {i}, z {min(zs):.0f}..{max(zs):.0f}, pts {[tuple(int(x) for x in p) for p in w]}")
-    # Chemin le plus court restreint au PVS de A
+        print(f"  -> cluster {nb:5d} via portal {i}, z {min(zs):.0f}..{max(zs):.0f}, pts {[tuple(int(x) for x in p) for p in w]}")
+    # Shortest path restricted to the PVS of A
     prev = {ca: None}; q = deque([ca])
     while q:
         c = q.popleft()
@@ -99,11 +99,11 @@ def main():
         path = []; c = cb
         while prev[c]:
             pc, i = prev[c]; path.append((pc, c, i)); c = pc
-        print("chemin (dans le PVS) :")
+        print("path (within the PVS):")
         for pc, c, i in reversed(path):
             w = P[i][2]
             ctr = tuple(int(sum(p[k] for p in w) / len(w)) for k in range(3))
-            print(f"  {pc} -> {c}  portail {i} centre {ctr} bbox cluster {cb_box.get(c)}")
+            print(f"  {pc} -> {c}  portal {i} center {ctr} cluster bbox {cb_box.get(c)}")
             print(f"      pts {[tuple(int(x) for x in p) for p in w]}")
 
 if __name__ == '__main__':

@@ -152,7 +152,7 @@ public:
 void TestLine( const FourVectors& start, const FourVectors& stop,
 			   fltx4 *pFractionVisible, int static_prop_index_to_ignore )
 {
-	// Lumiere directe CUDA : enregistrement puis rejeu des rayons d'ombre par face.
+	// CUDA direct lighting: shadow rays are recorded, then replayed from the GPU results.
 	bool haveGpu = false;
 	float gpuVis[4] = { 1, 1, 1, 1 };
 	VradRayQueue_t *q = g_pRayQueue;

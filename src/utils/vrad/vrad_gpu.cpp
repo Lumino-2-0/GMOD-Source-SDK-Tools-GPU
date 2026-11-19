@@ -1,14 +1,18 @@
 // vrad_gpu.cpp
 //
-// Partie CPU du backend CUDA de VRAD. Meme principe que VVIS (flow_gpu_host.cpp) :
-// nvcuda.dll chargee dynamiquement, noyau PTX embarque, aucun SDK a l'execution.
+// Host side of the VRAD CUDA backend. Same approach as VVIS (flow_gpu_host.cpp):
+// nvcuda.dll is loaded dynamically and the PTX kernels are embedded, so no CUDA
+// SDK is needed at run time. This file is not in the project: it is compiled
+// through an #include in vismat.cpp.
 //
-// Donnees envoyees une seule fois au GPU (geometrie statique de g_RtEnv) :
-//   - noeuds du k-d tree (Children + SplittingPlaneValue)
-//   - liste d'indices de triangles
-//   - triangles au format "intersection" (plan + equations d'aretes projetees)
-//   - boite englobante
-// Puis, par lot : rayons -> GPU, resultats (1 octet/rayon) <- GPU.
+// Uploaded once to the GPU (static geometry of g_RtEnv):
+//   - k-d tree nodes (Children + SplittingPlaneValue)
+//   - triangle index list
+//   - triangles in "intersection" form (plane + projected edge equations)
+//   - bounding box
+// Then, per batch: rays -> GPU, results (1 byte per ray) <- GPU.
+// The BSP and lightmap data for static prop indirect lighting is uploaded
+// separately by VradGPU_IndirectPrepare().
 
 #include <windows.h>
 #include <cstdio>
@@ -94,7 +98,7 @@ static struct
 	PFN_cuMemcpyDtoHAsync MemcpyDtoHAsync;
 } cu;
 
-// Doit correspondre a struct GpuTri de vrad_gpu_kernel.cu
+// Must match struct GpuTri in vrad_gpu_kernel.cu
 struct GpuTri
 {
 	float nx, ny, nz, d;
@@ -231,13 +235,13 @@ bool VradGPU_Init()
 
 	if ( !LoadCUDA() )
 	{
-		Warning( "[VRAD GPU] nvcuda.dll introuvable : repli CPU.\n" );
+		Warning( "[VRAD GPU] nvcuda.dll not found: falling back to CPU.\n" );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 	int count = 0;
 	if ( cu.Init( 0 ) != 0 || cu.DeviceGetCount( &count ) != 0 || count <= 0 )
 	{
-		Warning( "[VRAD GPU] aucun GPU CUDA : repli CPU.\n" );
+		Warning( "[VRAD GPU] no CUDA GPU found: falling back to CPU.\n" );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 
@@ -255,7 +259,7 @@ bool VradGPU_Init()
 	}
 	if ( chosen < 0 )
 	{
-		Warning( "[VRAD GPU] GPU < compute 7.5 : repli CPU.\n" );
+		Warning( "[VRAD GPU] no GPU with compute capability 7.5 or higher: falling back to CPU.\n" );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 
@@ -264,23 +268,23 @@ bool VradGPU_Init()
 
 	if ( cu.CtxCreate( &s_ctx, 0, dev ) != 0 )
 	{
-		Warning( "[VRAD GPU] creation du contexte CUDA impossible : repli CPU.\n" );
+		Warning( "[VRAD GPU] could not create the CUDA context: falling back to CPU.\n" );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 	CUresult r = cu.ModuleLoadData( &s_mod, g_VradTracePTX );
 	if ( r != 0 || cu.ModuleGetFunction( &s_kernel, s_mod, "TraceVisKernel" ) != 0 )
 	{
-		Warning( "[VRAD GPU] chargement du noyau PTX refuse (%d) : repli CPU.\n", r );
+		Warning( "[VRAD GPU] failed to load the PTX kernel (%d): falling back to CPU.\n", r );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 
-	// --- Geometrie ---
+	// --- Geometry ---
 	int nNodes = g_RtEnv.OptimizedKDTree.Count();
 	int nIdx = g_RtEnv.TriangleIndexList.Count();
 	int nTris = g_RtEnv.OptimizedTriangleList.Count();
 	if ( nNodes == 0 )
 	{
-		Warning( "[VRAD GPU] k-d tree vide : repli CPU.\n" );
+		Warning( "[VRAD GPU] empty k-d tree: falling back to CPU.\n" );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 
@@ -312,11 +316,11 @@ bool VradGPU_Init()
 	free( children ); free( split ); free( tris );
 	if ( !ok )
 	{
-		Warning( "[VRAD GPU] envoi de la geometrie impossible : repli CPU.\n" );
+		Warning( "[VRAD GPU] geometry upload failed: falling back to CPU.\n" );
 		FreeAll(); g_bUseCUDA = false; return false;
 	}
 
-	Msg( "[VRAD GPU] CUDA : %s | %d noeuds kd, %d triangles\n", name, nNodes, nTris );
+	Msg( "[VRAD GPU] CUDA: %s | %d k-d nodes, %d triangles\n", name, nNodes, nTris );
 	return true;
 }
 
@@ -331,7 +335,7 @@ bool VradGPU_TraceRays( const float *rays, int numRays, unsigned char *out, int 
 	if ( !s_ctx || numRays <= 0 )
 		return numRays <= 0;
 
-	// Choix d'un emplacement libre (flux + tampons propres) : les threads recouvrent copies et calcul.
+	// Pick a free slot (own stream and buffers) so that threads overlap copies and kernel execution.
 	int start = (int)( (unsigned)InterlockedIncrement( &s_slotCounter ) % NUM_GPU_SLOTS );
 	int si = -1;
 	for ( int k = 0; k < NUM_GPU_SLOTS; ++k )
@@ -382,8 +386,8 @@ bool VradGPU_TraceRays( const float *rays, int numRays, unsigned char *out, int 
 }
 
 // ---------------------------------------------------------------------------
-// Eclairage indirect des props statiques : donnees BSP + lightmaps sur le GPU.
-// Les structures doivent correspondre a celles de vrad_gpu_kernel.cu.
+// Static prop indirect lighting: BSP and lightmap data on the GPU.
+// These structures must match the ones in vrad_gpu_kernel.cu.
 // ---------------------------------------------------------------------------
 struct GpuBspNode { float nx, ny, nz, dist; int type; int ch0, ch1; int firstface, numfaces; };
 struct GpuBspLeaf { int firstleafface, numleaffaces, hasDisp, pad; };
@@ -413,7 +417,7 @@ extern void VradDisp_MarkLeaves( unsigned char *pLeafFlags );
 
 bool VradGPU_IndirectPrepare()
 {
-	// Table identique a celle du CPU (TexLightToLinear : c * power2_n[exp + 128], 2^(i-128)/255).
+	// Same table as the CPU (TexLightToLinear: c * power2_n[exp + 128], 2^(i-128)/255).
 	extern float power2_n[256];
 	const float *s_pow2Local = power2_n;
 	if ( s_indReady )
@@ -501,12 +505,12 @@ bool VradGPU_IndirectPrepare()
 	free( lf ); free( nodes ); free( leaves ); free( faces );
 	s_indReady = ok;
 	if ( !ok )
-		Warning( "[VRAD GPU] envoi des donnees BSP (indirect) impossible : repli CPU.\n" );
+		Warning( "[VRAD GPU] BSP data upload (indirect lighting) failed: falling back to CPU.\n" );
 	return ok;
 }
 
-// rays : 6 floats par rayon (origine, delta). out : 4 floats par rayon (rgb, w).
-// w = 0 : aucune contribution, 1 : contribution, 2 : a refaire sur le CPU.
+// rays: 6 floats per ray (origin, delta). out: 4 floats per ray (rgb, w).
+// w = 0: no contribution, 1: contribution, 2: must be redone on the CPU.
 bool VradGPU_Indirect( const float *rays, int numRays, float *out )
 {
 	if ( !s_ctx || !s_indReady || numRays <= 0 )
@@ -567,8 +571,8 @@ void VradGPU_AddVerifyStats( int rays, int mismatches )
 
 void VradGPU_PrintStats()
 {
-	Msg( "[VRAD GPU] %lld rayons en %ld lots\n", (long long)s_totalRays, s_totalBatches );
-	Msg( "[VRAD GPU] lumiere directe : %ld appels rejoues depuis le GPU, %ld repasses au CPU\n", s_directRays / 4, s_directMiss );
+	Msg( "[VRAD GPU] %lld rays in %ld batches\n", (long long)s_totalRays, s_totalBatches );
+	Msg( "[VRAD GPU] direct light: %ld calls replayed from the GPU, %ld redone on the CPU\n", s_directRays / 4, s_directMiss );
 	if ( g_bCUDAVerify )
-		Msg( "[VRAD GPU] verification : %ld rayons compares, %ld ecarts CPU/GPU\n", s_verifyRays, s_verifyMismatch );
+		Msg( "[VRAD GPU] verification: %ld rays compared, %ld CPU/GPU mismatches\n", s_verifyRays, s_verifyMismatch );
 }

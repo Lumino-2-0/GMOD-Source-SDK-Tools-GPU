@@ -71,21 +71,58 @@ vvis_gpu.exe [options] ma_carte.bsp
 | Option | Effet |
 |---|---|
 | `-cuda` / `-opencl` / `-cpu` | Force le backend (par défaut : CUDA, puis OpenCL, puis CPU) |
-| `-final` | Deux passes (4 puis 8 points par anneau), plus complet mais plus lent |
+| `-final` | Plus précis : passe d'anneaux complète, puis échantillonnage plus dense (jusqu'à 256 points par portail) avec un budget de temps plus large |
 | `-fast` | Pas de raycast, juste le `portalflood` (énorme PVS, très rapide) |
-| `-Ray <n>` | Points par anneau de portail (défaut 4, rien ne change au-delà de 8) |
-| `-RaycastType 1` | Échantillonnage plus dense (~+25 %) |
-| `-Pass 0:Ray=4,1:Ray=8` | Passes à la carte |
+| `-Ray <n>` | Une seule passe d'anneaux, n points par anneau (défaut 4, rien ne change au-delà de 8) |
+| `-RaycastType 1` | Une seule passe d'anneaux, plus dense |
+| `-Pass 0:Ray=4,1:Dense=64` | Passes à la carte (`Ray=<n>`, `RaycastType=<0-1>`, `Dense=<points>` ou `Auto=<points max>`) |
+| `-debug` | Sortie GPU détaillée (carte, chaque passe, paires candidates) |
+| `-nocolor` | Sortie en texte simple (aussi `NO_COLOR=1` ; `FORCE_COLOR=1` garde les couleurs si la sortie est redirigée) |
+| `-noupdate` | Pas de vérification de mise à jour au démarrage (aussi `VVIS_GPU_NOUPDATE=1`) |
 
 Le principe : au lieu du `RecursiveLeafFlow` de Valve, on tire des rayons d'un portail à
-l'autre à travers les leafs. Si un rayon passe, la paire est visible. Ça **ajoute** de la
-visibilité, ça n'en retire jamais : au pire ça rend un peu trop de choses, jamais un trou
-dans la carte.
+l'autre à travers les leafs. Si un rayon passe, la paire est visible. Par défaut il y a deux
+passes :
 
-⚠️ Ce n'est **pas** le même résultat que le VVIS de Valve. Ça marche bien sur des cartes
-normales, mais sur des zones pleines de trous (genre une maison en ruine), le PVS peut être
-nettement plus large qu'avec le VVIS d'origine.
+1. **Anneaux** : le centre du portail plus des anneaux vers ses coins, on s'arrête au premier
+   rayon qui passe.
+2. **Échantillonnage dense** sur les paires que la première passe n'a pas pu prouver. Le
+   nombre de points (jusqu'à 128 par portail) s'adapte à un budget d'environ 25 % de la
+   première passe (au moins 1 s) : complet sur les petites cartes, léger ou sauté sur les
+   énormes, donc le temps de compilation reste proche de celui de la première passe.
 
+Les rayons ne peuvent pas frôler les bords des portails, les points restent légèrement à
+l'intérieur des coins, et le résultat est limité au `portalflood` : un rayon ne peut plus
+« fuir » par le coin d'un mur.
+
+Comparé au VVIS de Valve (`-cpu -final`), sur mes cartes de test le GPU ne rend jamais visible
+une paire que le CPU cache, et il n'en rate que quelques-unes derrière des ouvertures très
+étroites (paires de clusters manquantes par rapport au CPU) :
+
+| Carte | v0.1 | Défaut | `-final` |
+|---|---|---|---|
+| `campaign_1` | 92 | 8 | 8 |
+| `gm_teste_vvis` | 2968 | 910 | 562 |
+
+Sur `gm_kindercity_night` (6 722 clusters, RTX 4090), tout VVIS prend environ 28 s (environ
+60 s pour la v0.1). Si tu vois un trou dans la carte, essaie `-final`, et ouvre une issue avec
+la position (`getpos`).
+
+À la fin, tous les modes (GPU, `-cpu`, `-fast`) affichent la même ligne `PVS final: x%.` : la
+part de la carte visible depuis un cluster moyen (plus c'est bas, plus on cache). Sur
+`campaign_1` : GPU 41,96 %, CPU 42,11 %, `-fast` 65,78 %. La ligne CPU
+`Optimized: N visible clusters (x%)` compte les liens à sens unique retirés par la
+vérification finale, pas la taille du PVS : le GPU ne l'affiche qu'avec `-debug`.
+
+La console est en couleurs, avec une bannière en ASCII art et une seule barre de progression
+`PortalFlow_RayGPU` (texte simple si la sortie est redirigée, et dans le `.log`).
+
+**Mises à jour :** au démarrage, `vvis_gpu.exe` regarde les
+[tags GitHub](https://github.com/Lumino-2-0/GMOD-Source-SDK-Tools-GPU/tags). Si un tag est plus
+récent que l'exe et que sa release a un fichier à télécharger, il le télécharge, se remplace
+(l'ancien exe est gardé en `vvis_gpu.exe.old` jusqu'au lancement suivant) et se relance avec
+les mêmes arguments. Sans réseau, ou si l'exe est dans un dossier où il ne peut pas écrire, il
+garde simplement la version actuelle.
 ## Compiler
 
 Visual Studio 2022 (ou plus récent : 2026) (C++ desktop, MSVC, SDK Windows), configuration
@@ -114,6 +151,8 @@ VVIS :
 | `src/utils/vrad/vradstaticprops.cpp` | Éclairage des static props branché sur le GPU |
 | `src/utils/vvis/flow_gpu_host.cpp` | Côté CPU du GPU pour VVIS (CUDA + OpenCL, passes) |
 | `src/utils/vvis/flow_gpu_kernel.cu` | Noyau VVIS (le principe est expliqué en tête) |
+| `src/utils/vvis/vvis_ui.cpp` | Sortie console de VVIS (couleurs, bannière, barre de progression) |
+| `src/utils/vvis_launcher/vvis_updater.cpp` | Vérification et installation des mises à jour depuis GitHub |
 | `src/utils/*_launcher/` | Launchers qui embarquent les DLL |
 | `tools/` | Petits scripts Python : PVS d'un point, tailles de lightmap, symboles d'un crash |
 

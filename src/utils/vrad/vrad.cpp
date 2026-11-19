@@ -1755,7 +1755,7 @@ int CountClusters( void )
 RadWorld
 =============
 */
-// Chrono par phase, toujours actif (cout negligeable).
+// Per-phase timer, always enabled (negligible cost).
 static double s_PhaseStart = 0.0;
 static void PhaseBegin()
 {
@@ -2933,9 +2933,9 @@ void PrintUsage( int argc, char **argv )
         "  -StaticPropPolys   : Perform shadow tests of static props at polygon precision\n"
         "  -OnlyStaticProps   : Only perform direct static prop lighting (vrad debug option)\n"
 		"  -StaticPropNormals : when lighting static props, just show their normal vector\n"
-		"  -cuda          : Visibilite des transferts sur GPU CUDA (repli CPU si indisponible)\n"
-		"  -cudaverify    : Comme -cuda mais compare chaque rayon au CPU et rapporte les ecarts\n"
-		"  -NoPropMark    : Ne pas basculer en eclairage dynamique les props eclaires par des lumieres a style\n"
+		"  -cuda          : Trace rays on a CUDA GPU (falls back to the CPU if unavailable)\n"
+		"  -cudaverify    : Like -cuda, but checks every ray against the CPU and reports mismatches\n"
+		"  -NoPropMark    : Do not switch static props lit by styled lights to dynamic lighting\n"
 		"  -textureshadows : Allows texture alpha channels to block light - rays intersecting alpha surfaces will sample the texture\n"
 		"  -noskyboxrecurse : Turn off recursion into 3d skybox (skybox shadows on world)\n"
 		"  -nossprops      : Globally disable self-shadowing on static props\n"

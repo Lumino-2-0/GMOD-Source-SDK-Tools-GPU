@@ -138,6 +138,8 @@
       <Filter>Source Files</Filter>
     </ClInclude>
     <ClInclude Include="flow_gpu.h" />
+    <ClInclude Include="vvis_ui.h" />
+    <ClInclude Include="flow_gpu_kernel.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\common\bsplib.cpp">
@@ -198,9 +200,7 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="flow_gpu_host.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="flow_gpu_kernel.h" />
+    <ClCompile Include="vvis_ui.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="flow_gpu_kernel.cu" />

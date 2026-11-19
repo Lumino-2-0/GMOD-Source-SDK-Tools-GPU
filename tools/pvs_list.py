@@ -1,5 +1,5 @@
-"""Liste les clusters du PVS d'un point, tries par distance, avec leur bbox.
-Usage : python pvs_list.py map.bsp x y z [distance_min]
+"""Lists the clusters in the PVS of a point, sorted by distance, with their bboxes.
+Usage: python pvs_list.py map.bsp x y z [min_distance]
 """
 import sys, math
 from pvs_diag import load, find_leaf, pvs

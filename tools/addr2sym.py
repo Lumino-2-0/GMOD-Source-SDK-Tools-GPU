@@ -1,5 +1,5 @@
-"""Resout des offsets RVA de vrad_dll.dll en symboles via dbghelp (PDB a cote de la DLL).
-Usage : python addr2sym.py chemin\\vrad_dll.dll 0x119EB 0x13326 ...
+"""Resolves RVA offsets in vrad_dll.dll to symbols with dbghelp (PDB next to the DLL).
+Usage: python addr2sym.py path\\vrad_dll.dll 0x119EB 0x13326 ...
 """
 import ctypes, sys
 from ctypes import wintypes
