@@ -114,13 +114,13 @@ Comparé au VVIS de Valve (`-cpu`), sur mes cartes de test le GPU ne rend jamais
 paire que le CPU cache, et il n'en rate que quelques-unes derrière des ouvertures très étroites
 (paires de clusters manquantes par rapport au CPU) :
 
-| Carte | v0.1 | v0.2 | v0.3 |
-|---|---|---|---|
-| `campaign_1` | 92 | 8 | 8 |
-| `gm_teste_vvis` | 2968 | 910 | 806 |
+| Carte | v0.1 | v0.2 |
+|---|---|---|
+| `campaign_1` | 92 | 8 |
+| `gm_teste_vvis` | 2968 | 806 |
 
 Sur `gm_kindercity_night` (7 019 clusters, RTX 4090 + Ryzen 9 7900X), le raycast prend environ
-6 s et tout VVIS environ 10 s (environ 36 s pour la v0.2). Si tu vois un trou dans la carte,
+6 s et tout VVIS environ 10 s (environ 43 s pour la v0.1). Si tu vois un trou dans la carte,
 ouvre une issue avec la position (`getpos`).
 
 À la fin, tous les modes (GPU, `-cpu`, `-fast`) affichent la même ligne `PVS final: x%.` : la

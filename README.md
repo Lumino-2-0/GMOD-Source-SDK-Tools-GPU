@@ -109,13 +109,13 @@ Compared with Valve's VVIS (`-cpu`), on my test maps the GPU never marks as visi
 the CPU hides, and it misses only a few pairs behind very narrow openings (cluster pairs
 missing compared with the CPU):
 
-| Map | v0.1 | v0.2 | v0.3 |
-|---|---|---|---|
-| `campaign_1` | 92 | 8 | 8 |
-| `gm_teste_vvis` | 2968 | 910 | 806 |
+| Map | v0.1 | v0.2 |
+|---|---|---|
+| `campaign_1` | 92 | 8 |
+| `gm_teste_vvis` | 2968 | 806 |
 
 On `gm_kindercity_night` (7,019 clusters, RTX 4090 + Ryzen 9 7900X) the raycast takes about
-6 s and the whole VVIS about 10 s (about 36 s for v0.2). If you ever see a hole in the world,
+6 s and the whole VVIS about 10 s (about 43 s for v0.1). If you ever see a hole in the world,
 please open an issue with the position (`getpos`).
 
 At the end, every mode (GPU, `-cpu`, `-fast`) prints the same `PVS final: x%.` line: the share

@@ -1336,7 +1336,8 @@ static bool RunPass( const WorkUnit *units, int numUnits, unsigned long long pas
 //   2. Flatten the leaf -> outgoing portals topology (GPULeaf).
 //   3. Copy portalflood: it is the candidate pair filter.
 //   4. For each pass: cut the candidates into work units, run every engine on them
-//      (1 kernel thread = 1 pair), then merge the result with a bitwise OR.
+//      (on a GPU, 1 warp = 1 pair, split into ray chunks in the dense pass; on the
+//      CPU, 1 thread walks its pairs one by one), then merge the results with a bitwise OR.
 //   5. Copy the result into portal_t and mark it stat_done.
 //
 // Passes: passes[k] describes pass k (see GPUPassConfig in flow_gpu.h). Pass 0 tests
