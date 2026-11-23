@@ -176,13 +176,13 @@ void VisUI_Banner( void )
 
 	if ( !s_bVT )
 	{
-		VisUI_Msg( UI_CYAN, "Valve + Lumastor-IronKnight Software - vvis_gpu.exe (%s)\n", __DATE__ );
+		VisUI_Msg( UI_CYAN, "Valve + Lumastor & IRON-KNIGHT Software - vvis_gpu.exe (%s)\n", __DATE__ );
 		if ( szUpdate[0] )
 			VisUI_Msg( bUpdateWarn ? UI_YELLOW : UI_GREY, "update: %s\n", szUpdate );
 		return;
 	}
 
-	VisUI_LogOnly( "Valve + Lumastor-IronKnight Software - vvis_gpu.exe (%s)\n", __DATE__ );
+	VisUI_LogOnly( "Valve + Lumastor & IRON-KNIGHT Software - vvis_gpu.exe (%s)\n", __DATE__ );
 	if ( szUpdate[0] )
 		VisUI_LogOnly( "update: %s\n", szUpdate );
 

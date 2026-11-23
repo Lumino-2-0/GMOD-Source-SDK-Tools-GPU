@@ -70,13 +70,14 @@ vvis_gpu.exe [options] ma_carte.bsp
 
 | Option | Effet |
 |---|---|
-| `-cuda` / `-opencl` / `-cpu` | Force le backend (par défaut : CUDA, puis OpenCL, puis CPU) |
-| `-final` | Plus précis : passe d'anneaux complète, puis échantillonnage plus dense (jusqu'à 256 points par portail) avec un budget de temps plus large |
+| (défaut) | Raycast sur **tous les moteurs à la fois** : le GPU principal, les autres GPU (GPU intégré, via OpenCL) et les threads CPU (AVX2 si dispo) |
+| `-gpuonly` | GPU seulement (pas de threads CPU) |
+| `-nogpu` | Threads CPU seulement (même PVS, plus lent) |
+| `-cuda` / `-opencl` | API du GPU principal (par défaut : CUDA sur NVIDIA, sinon OpenCL) |
+| `-cpu` | Le flow CPU récursif d'origine de Valve (pas de raycast) |
 | `-fast` | Pas de raycast, juste le `portalflood` (énorme PVS, très rapide) |
-| `-Ray <n>` | Une seule passe d'anneaux, n points par anneau (défaut 4, rien ne change au-delà de 8) |
-| `-RaycastType 1` | Une seule passe d'anneaux, plus dense |
-| `-Pass 0:Ray=4,1:Dense=64` | Passes à la carte (`Ray=<n>`, `RaycastType=<0-1>`, `Dense=<points>` ou `Auto=<points max>`) |
-| `-debug` | Sortie GPU détaillée (carte, chaque passe, paires candidates) |
+| `-final`, `-Ray`, `-RaycastType`, `-Pass` | Acceptées mais ignorées : la précision est fixe (voir plus bas) |
+| `-debug` | Sortie GPU détaillée (moteurs, chaque passe, paires candidates, répartition du travail) |
 | `-nocolor` | Sortie en texte simple (aussi `NO_COLOR=1` ; `FORCE_COLOR=1` garde les couleurs si la sortie est redirigée) |
 | `-noupdate` | Pas de vérification de mise à jour au démarrage (aussi `VVIS_GPU_NOUPDATE=1`) |
 
@@ -86,27 +87,39 @@ passes :
 
 1. **Anneaux** : le centre du portail plus des anneaux vers ses coins, on s'arrête au premier
    rayon qui passe.
-2. **Échantillonnage dense** sur les paires que la première passe n'a pas pu prouver. Le
-   nombre de points (jusqu'à 128 par portail) s'adapte à un budget d'environ 25 % de la
-   première passe (au moins 1 s) : complet sur les petites cartes, léger ou sauté sur les
-   énormes, donc le temps de compilation reste proche de celui de la première passe.
+2. **Échantillonnage dense** sur les paires que la première passe n'a pas pu prouver, en
+   tirant tous les rayons. Le nombre de points (jusqu'à 128 par portail) vient d'un budget de
+   travail qui ne dépend que de la carte (au moins 600 M rayons, ou 1/8 de la première
+   passe) : complet sur les petites cartes, léger ou sauté sur les énormes, donc le temps de
+   compilation reste proche de celui de la première passe.
 
 Les rayons ne peuvent pas frôler les bords des portails, les points restent légèrement à
 l'intérieur des coins, et le résultat est limité au `portalflood` : un rayon ne peut plus
 « fuir » par le coin d'un mur.
 
-Comparé au VVIS de Valve (`-cpu -final`), sur mes cartes de test le GPU ne rend jamais visible
-une paire que le CPU cache, et il n'en rate que quelques-unes derrière des ouvertures très
-étroites (paires de clusters manquantes par rapport au CPU) :
+**Le même PVS partout.** Rien ne dépend de la vitesse de la machine : les rayons sont tirés par
+groupes fixes de 32 et tous les moteurs (CUDA, OpenCL, CPU SSE2/AVX2) exécutent le même code,
+donc une carte donne un PVS identique à l'octet près sur n'importe quel PC, quel que soit le
+mélange de moteurs. C'est pour ça que `-final` a disparu : il n'y a qu'une précision, la
+meilleure qu'on peut se permettre.
 
-| Carte | v0.1 | Défaut | `-final` |
+**Tous les moteurs ensemble.** Le travail est découpé en petits lots que les GPU et les threads
+CPU prennent dès qu'ils ont fini, donc un GPU rapide fait l'essentiel et personne n'attend. Le
+GPU répartit les rayons de chaque paire sur un warp entier (et sur plusieurs warps pendant la
+passe dense), et garde deux lots en vol, donc sa charge reste à 100 %.
+
+Comparé au VVIS de Valve (`-cpu`), sur mes cartes de test le GPU ne rend jamais visible une
+paire que le CPU cache, et il n'en rate que quelques-unes derrière des ouvertures très étroites
+(paires de clusters manquantes par rapport au CPU) :
+
+| Carte | v0.1 | v0.2 | v0.3 |
 |---|---|---|---|
 | `campaign_1` | 92 | 8 | 8 |
-| `gm_teste_vvis` | 2968 | 910 | 562 |
+| `gm_teste_vvis` | 2968 | 910 | 806 |
 
-Sur `gm_kindercity_night` (6 722 clusters, RTX 4090), tout VVIS prend environ 28 s (environ
-60 s pour la v0.1). Si tu vois un trou dans la carte, essaie `-final`, et ouvre une issue avec
-la position (`getpos`).
+Sur `gm_kindercity_night` (7 019 clusters, RTX 4090 + Ryzen 9 7900X), le raycast prend environ
+6 s et tout VVIS environ 10 s (environ 36 s pour la v0.2). Si tu vois un trou dans la carte,
+ouvre une issue avec la position (`getpos`).
 
 À la fin, tous les modes (GPU, `-cpu`, `-fast`) affichent la même ligne `PVS final: x%.` : la
 part de la carte visible depuis un cluster moyen (plus c'est bas, plus on cache). Sur
@@ -149,8 +162,9 @@ VVIS :
 | `src/utils/vrad/vrad_gpu.cpp` | Côté CPU du GPU pour VRAD (chargement CUDA, lots, files) |
 | `src/utils/vrad/vrad_gpu_kernel.cu` | Noyaux VRAD : k-d tree, ombres, indirect |
 | `src/utils/vrad/vradstaticprops.cpp` | Éclairage des static props branché sur le GPU |
-| `src/utils/vvis/flow_gpu_host.cpp` | Côté CPU du GPU pour VVIS (CUDA + OpenCL, passes) |
-| `src/utils/vvis/flow_gpu_kernel.cu` | Noyau VVIS (le principe est expliqué en tête) |
+| `src/utils/vvis/flow_gpu_host.cpp` | Pilotage du raycast VVIS (moteurs, répartition, passes) |
+| `src/utils/vvis/flow_gpu_kernel.cu` | Noyau VVIS, commun à CUDA et au CPU (le principe est expliqué en tête) |
+| `src/utils/vvis/flow_cpu_ray*.cpp` | Le même noyau compilé pour les threads CPU (SSE2 et AVX2) |
 | `src/utils/vvis/vvis_ui.cpp` | Sortie console de VVIS (couleurs, bannière, barre de progression) |
 | `src/utils/vvis_launcher/vvis_updater.cpp` | Vérification et installation des mises à jour depuis GitHub |
 | `src/utils/*_launcher/` | Launchers qui embarquent les DLL |

@@ -2,11 +2,15 @@
 //
 // Interface between VVIS (CPU) and the GPU visibility computation.
 //
-// Two backends, loaded dynamically (no static linking):
+// Three kinds of ray engines work together on the same pass:
 //   - CUDA   : nvcuda.dll, embedded PTX kernel (flow_gpu_kernel.cu)
-//   - OpenCL : OpenCL.dll, kernel embedded as source text (flow_gpu_kernel.h)
-// Both kernels perform exactly the same computation. If no GPU is usable,
-// GPU_Init() returns false and VVIS falls back to the original CPU flow.
+//   - OpenCL : OpenCL.dll, kernel embedded as source text (flow_gpu_kernel.h);
+//              used for non-NVIDIA GPUs, including integrated GPUs
+//   - CPU    : the same kernel source compiled natively (flow_cpu_ray*.cpp),
+//              SSE2 or AVX2 build picked at run time
+// All engines compute bit-identical results, so the PVS does not depend on which
+// engine processed which pair. GPU_Init() returns false only if no engine at all
+// can be created; VVIS then falls back to the original CPU flow.
 
 #pragma once
 
@@ -69,9 +73,16 @@ bool GPU_RunPortalFlowRaycast( int sorted_portal_count, const GPUPassConfig *pas
 #define RAY_FLAG_EXHAUSTIVE 2
 #define RAY_FLAG_HALTON     4
 #define RAY_FLAG_MIRROR     8
-// Host side only: time-budgeted dense pass. `samples` is then only a cap; the host
-// picks the number of points per portal so that the pass lasts at most
-// max( budgetMin, budgetRel * previous pass duration ) seconds, based on the rate
-// measured on the previous pass. Small maps thus get a fine dense pass, very large
-// maps a light one (or none).
+// Host side only: work-budgeted dense pass. `samples` is then only a cap; the host
+// picks the largest number of points per portal n such that
+//   candidates * n^2 <= max( budgetMin * 1e6, budgetRel * previous pass work )
+// where the work of a pass is candidates * points^2 (ray-units). The budget depends
+// only on the map, never on the hardware or the measured speed, so the PVS is the
+// same on every machine. Small maps get a fine dense pass, very large maps a light
+// one (or none, below 6 points).
 #define RAY_FLAG_AUTO       16
+
+// Engine selection (vvis.cpp options): -gpuonly disables the CPU ray engine,
+// -nogpu uses only the CPU ray engine.
+extern bool g_bRayGpuOnly;
+extern bool g_bRayNoGpu;

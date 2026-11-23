@@ -1,7 +1,8 @@
 // flow_gpu_kernel.h
 // OpenCL C source of the "stabbing lines" kernel, compiled at run time by the
-// driver (clBuildProgram). Same computation as flow_gpu_kernel.cu: same
-// sampling, same epsilons, same traversal.
+// driver (clBuildProgram). Same computation as flow_gpu_kernel.cu (also used by the
+// CPU engine): same sampling, same epsilons, same traversal, bit-identical results.
+// Any change made here must be mirrored in flow_gpu_kernel.cu, and vice versa.
 //
 // Principle: for each (src, dst) pair allowed by portalflood, segments are cast
 // between interior points of src and dst, and each segment is followed from leaf
@@ -13,8 +14,8 @@
 //
 // In each leaf, the closest outgoing portal (smallest t > tcur) is taken whose
 // plane is crossed along its normal and whose winding contains the hit point
-// (with the signed edge margin edge_eps). q1, q2 and dst are then marked
-// visible from src.
+// (with the signed edge margin baked into winding_edges). q1, q2 and dst are then
+// marked visible from src.
 //
 // Points per portal: centroid + the rings enabled in ringmask (t = 0.9, 0.5 and
 // 0.99 towards the vertices, at most samples_per_portal vertices per ring), or,
@@ -71,25 +72,29 @@ inline int TestBit( __global const uchar *row, int bit )
 	return ( row[bit >> 3] >> ( bit & 7 ) ) & 1;
 }
 
-// A point is inside the winding if it lies on the inner side of every edge, with a
-// signed margin `eps`: eps < 0 requires it to be clearly inside (see the .cu).
-int PointInWinding( __global const float *winding_pts, __global const GPUPortal *gp, const float x[3], float eps )
+// A point is inside the winding if it lies on the inner side of every edge, with the
+// signed margin tol = eps * edge length stored in winding_edges (see the .cu).
+// Stops as soon as the point is known to be outside.
+int PointInWinding( __global const float *winding_pts, __global const float *winding_edges,
+	__global const GPUPortal *gp, const float x[3] )
 {
 	int allpos = 1, allneg = 1;
-	int n = gp->winding_count;
+	const int n = gp->winding_count;
 	__global const float *w = winding_pts + (size_t)gp->winding_start * 3;
+	__global const float *e = winding_edges + (size_t)gp->winding_start * 4;
+	const float n0 = gp->plane_normal[0], n1 = gp->plane_normal[1], n2 = gp->plane_normal[2];
 	for ( int k = 0; k < n; ++k )
 	{
-		int k1 = ( k + 1 == n ) ? 0 : k + 1;
-		float e0 = w[k1*3+0] - w[k*3+0], e1 = w[k1*3+1] - w[k*3+1], e2 = w[k1*3+2] - w[k*3+2];
+		float e0 = e[k*4+0], e1 = e[k*4+1], e2 = e[k*4+2], tol = e[k*4+3];
 		float d0 = x[0] - w[k*3+0], d1 = x[1] - w[k*3+1], d2 = x[2] - w[k*3+2];
 		float c0 = e1*d2 - e2*d1, c1 = e2*d0 - e0*d2, c2 = e0*d1 - e1*d0;
-		float s = c0*gp->plane_normal[0] + c1*gp->plane_normal[1] + c2*gp->plane_normal[2];
-		float tol = eps * sqrt( e0*e0 + e1*e1 + e2*e2 );
+		float s = c0*n0 + c1*n1 + c2*n2;
 		if ( s < -tol ) allpos = 0;
 		if ( s > tol ) allneg = 0;
+		if ( !allpos && !allneg )
+			return 0;
 	}
-	return allpos || allneg;
+	return 1;
 }
 
 void PortalCentroid( __global const float *winding_pts, __global const GPUPortal *gp, float out[3] )
@@ -160,8 +165,8 @@ void PortalHaltonSample( __global const float *winding_pts, __global const GPUPo
 // Returns 1 if dst is reached. With RAY_FLAG_EXTEND the ray keeps going after dst.
 int WalkStabbingLine(
 	__global const GPUPortal *portals, __global const GPULeaf *leafs, int num_leafs,
-	__global const int *leaf_portals, __global const float *winding_pts,
-	__global volatile uint *portalvis_words, int portalbytes, int max_steps, int flags, float edge_eps,
+	__global const int *leaf_portals, __global const float *winding_pts, __global const float *winding_edges,
+	__global volatile uint *portalvis_words, int portalbytes, int max_steps, int flags,
 	int src, int dst, const float a[3], const float b[3] )
 {
 	float dir0 = b[0] - a[0], dir1 = b[1] - a[1], dir2 = b[2] - a[2];
@@ -188,7 +193,12 @@ int WalkStabbingLine(
 			if ( t <= tcur + RAY_EPS_T || t > tmax || t >= best_t )
 				continue;
 			float x[3] = { a[0] + t*dir0, a[1] + t*dir1, a[2] + t*dir2 };
-			if ( !PointInWinding( winding_pts, gq, x, edge_eps ) )
+			// Bounding sphere (+1 unit margin): strictly looser than the winding test.
+			float o0 = x[0] - gq->origin[0], o1 = x[1] - gq->origin[1], o2 = x[2] - gq->origin[2];
+			float rr = gq->radius + 1.0f;
+			if ( o0*o0 + o1*o1 + o2*o2 > rr*rr )
+				continue;
+			if ( !PointInWinding( winding_pts, winding_edges, gq, x ) )
 				continue;
 			best_t = t;
 			best_q = q;
@@ -208,66 +218,122 @@ int WalkStabbingLine(
 	return reached; // step limit reached: nothing else is confirmed
 }
 
-// 1 work-item = 1 candidate (src, dst) pair (bit set in portalflood[src]).
-// Launched in chunks via global_work_offset (avoids the Windows watchdog).
-__kernel void RaycastStabKernel(
+// Rays of a pair are cast in groups of RAY_GROUP; the pair stops after the first group
+// that contains a hit (same rule as RaycastPair in flow_gpu_kernel.cu).
+#define RAY_GROUP 32
+// With RAY_FLAG_EXHAUSTIVE: rays per row of the NDRange (dimension 1), see the host.
+#define RAY_CHUNK 256
+
+void RayPoint( __global const float *winding_pts, __global const GPUPortal *gp, const float c[3],
+	int nv, int ringmask, int halton, int s, float out[3] )
+{
+	if ( halton ) PortalHaltonSample( winding_pts, gp, s + 1, out );
+	else PortalInsetSample( winding_pts, gp, c, nv, ringmask, s, out );
+}
+
+// 1 work-item = 1 index of the range [start, end) of the pair index space. The 32 items
+// of a work-group list the candidate pairs among their indices, then cast the rays of
+// each pair together: item l casts ray base + l of each group. Every item reaches every
+// barrier: all the branches around them only depend on local memory or kernel arguments.
+// With RAY_FLAG_EXHAUSTIVE every ray is cast, and dimension 1 of the NDRange selects a
+// chunk of RAY_CHUNK rays of each pair.
+__kernel __attribute__(( reqd_work_group_size( RAY_GROUP, 1, 1 ) ))
+void RaycastStabKernel(
 	__global const GPUPortal *portals, int num_portals,
 	__global const GPULeaf *leafs, int num_leafs,
 	__global const int *leaf_portals,
 	__global const float *winding_pts,
+	__global const float *winding_edges,
 	__global const uchar *portalflood,
 	__global volatile uint *portalvis_words,
-	int portalbytes, int samples_per_portal, int max_steps, int flags, float edge_eps, int ringmask )
+	int portalbytes, int samples_per_portal, int max_steps, int flags, int ringmask,
+	ulong start, ulong end )
 {
-	ulong idx = get_global_id( 0 );
-	ulong npairs = (ulong)num_portals * (ulong)num_portals;
-	if ( idx >= npairs )
-		return;
-	int src = (int)( idx / (ulong)num_portals );
-	int dst = (int)( idx - (ulong)src * (ulong)num_portals );
-	if ( !TestBit( portalflood + (size_t)src * portalbytes, dst ) )
-		return;
-	if ( flags & RAY_FLAG_MIRROR )
+	__local int candSrc[RAY_GROUP];
+	__local int candDst[RAY_GROUP];
+	__local int groupHit[3];
+	const int lid = (int)get_local_id( 0 );
+	const ulong idx = start + get_global_id( 0 );
+	int csrc = -1, cdst = 0;
+	if ( idx < end )
 	{
-		ulong midx = (ulong)( dst ^ 1 ) * (ulong)num_portals + (ulong)( src ^ 1 );
-		if ( midx < idx && TestBit( portalflood + (size_t)( dst ^ 1 ) * portalbytes, src ^ 1 ) )
-			return;
-	}
-
-	__global const GPUPortal *sp = portals + src;
-	__global const GPUPortal *dp = portals + dst;
-	if ( sp->winding_count < 3 || dp->winding_count < 3 )
-		return;
-
-	int nvs = sp->winding_count < samples_per_portal ? sp->winding_count : samples_per_portal;
-	int nvd = dp->winding_count < samples_per_portal ? dp->winding_count : samples_per_portal;
-	float cs[3], cd[3];
-	PortalCentroid( winding_pts, sp, cs );
-	PortalCentroid( winding_pts, dp, cd );
-
-	const int halton = ( flags & RAY_FLAG_HALTON ) != 0;
-	const int nrings = popcount( (uint)ringmask );
-	int ss = halton ? samples_per_portal : 1 + nrings * nvs;
-	int sd = halton ? samples_per_portal : 1 + nrings * nvd;
-	int visible = 0;
-	const int stop_on_hit = !( flags & RAY_FLAG_EXHAUSTIVE );
-	for ( int si = 0; si < ss && !( visible && stop_on_hit ); ++si )
-	{
-		float a[3];
-		if ( halton ) PortalHaltonSample( winding_pts, sp, si + 1, a );
-		else PortalInsetSample( winding_pts, sp, cs, nvs, ringmask, si, a );
-		for ( int di = 0; di < sd; ++di )
+		int src = (int)( idx / (ulong)num_portals );
+		int dst = (int)( idx - (ulong)src * (ulong)num_portals );
+		int cand = TestBit( portalflood + (size_t)src * portalbytes, dst );
+		if ( cand && ( flags & RAY_FLAG_MIRROR ) )
 		{
-			float b[3];
-			if ( halton ) PortalHaltonSample( winding_pts, dp, di + 1, b );
-			else PortalInsetSample( winding_pts, dp, cd, nvd, ringmask, di, b );
-			if ( WalkStabbingLine( portals, leafs, num_leafs, leaf_portals, winding_pts,
-					portalvis_words, portalbytes, max_steps, flags, edge_eps, src, dst, a, b ) )
+			ulong midx = (ulong)( dst ^ 1 ) * (ulong)num_portals + (ulong)( src ^ 1 );
+			if ( midx < idx && TestBit( portalflood + (size_t)( dst ^ 1 ) * portalbytes, src ^ 1 ) )
+				cand = 0;
+		}
+		if ( cand )
+		{
+			csrc = src;
+			cdst = dst;
+		}
+	}
+	candSrc[lid] = csrc;
+	candDst[lid] = cdst;
+	if ( lid < 3 )
+		groupHit[lid] = 0;
+	barrier( CLK_LOCAL_MEM_FENCE );
+
+	// groupHit is triple-buffered: group g uses slot g % 3 and zeroes the slot of group
+	// g + 1, which nobody reads any more (its last readers passed the previous barrier).
+	int slot = 0;
+	const int stop_on_hit = !( flags & RAY_FLAG_EXHAUSTIVE );
+	for ( int k = 0; k < RAY_GROUP; ++k )
+	{
+		const int src = candSrc[k];
+		if ( src < 0 )
+			continue;
+		const int dst = candDst[k];
+		__global const GPUPortal *sp = portals + src;
+		__global const GPUPortal *dp = portals + dst;
+		if ( sp->winding_count < 3 || dp->winding_count < 3 )
+			continue;
+
+		int nvs = sp->winding_count < samples_per_portal ? sp->winding_count : samples_per_portal;
+		int nvd = dp->winding_count < samples_per_portal ? dp->winding_count : samples_per_portal;
+		float cs[3], cd[3];
+		PortalCentroid( winding_pts, sp, cs );
+		PortalCentroid( winding_pts, dp, cd );
+		const int halton = ( flags & RAY_FLAG_HALTON ) != 0;
+		const int nrings = popcount( (uint)ringmask );
+		const int ss = halton ? samples_per_portal : 1 + nrings * nvs;
+		const int sd = halton ? samples_per_portal : 1 + nrings * nvd;
+		const int total = ss * sd;
+		int rbegin = 0, rend = total;
+		if ( !stop_on_hit )
+		{
+			rbegin = (int)get_group_id( 1 ) * RAY_CHUNK;
+			if ( rbegin >= total )
+				continue;
+			rend = rbegin + RAY_CHUNK < total ? rbegin + RAY_CHUNK : total;
+		}
+		int visible = 0;
+		for ( int base = rbegin; base < rend; base += RAY_GROUP )
+		{
+			const int next = slot == 2 ? 0 : slot + 1;
+			if ( lid == 0 )
+				groupHit[next] = 0;
+			const int r = base + lid;
+			if ( r < rend )
 			{
-				visible = 1;
-				if ( stop_on_hit )
-					break;
+				const int si = r / sd, di = r - si * sd;
+				float a[3], b[3];
+				RayPoint( winding_pts, sp, cs, nvs, ringmask, halton, si, a );
+				RayPoint( winding_pts, dp, cd, nvd, ringmask, halton, di, b );
+				if ( WalkStabbingLine( portals, leafs, num_leafs, leaf_portals, winding_pts, winding_edges,
+						portalvis_words, portalbytes, max_steps, flags, src, dst, a, b ) )
+					groupHit[slot] = 1;
 			}
+			barrier( CLK_LOCAL_MEM_FENCE );
+			if ( groupHit[slot] )
+				visible = 1;
+			slot = next;
+			if ( visible && stop_on_hit )
+				break;
 		}
 	}
 }

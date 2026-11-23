@@ -54,34 +54,24 @@ bool		g_bUseRadius = false;
 double		g_VisRadius = 4096.0f * 4096.0f;
 
 bool		g_bLowPriority = false;
-// GPU raycast precision: g_Passes[k] describes pass k (see flow_gpu.h).
-//   Ring pass : center + rings of points towards the winding vertices.
-//   Dense pass: n points spread over the whole portal surface (n*n rays per pair).
-//   Auto pass : dense, but n is chosen by the host from a time budget.
-//   Default: a fast ring pass (stops at the first ray that gets through), then an auto
-//   dense pass that only re-tests the unproven pairs. -final: complete rings, then an
-//   auto dense pass with a larger time budget. -RaycastType / -Ray / -Pass: manual setup.
-//   Each later pass only re-tests the candidate pairs not yet proven visible
-//   (see flow_gpu_host.cpp).
-static const int g_RaycastTypeSamples[2] = { 4, 5 };
-
-static GPUPassConfig MakeRingPass( int n, int flags, int ringmask )
-{
-	GPUPassConfig c = { n, flags, ringmask, 0.0f, 0.0f };
-	return c;
-}
-
-static GPUPassConfig MakeDensePass( int n, bool bAuto, float budgetRel, float budgetMin )
-{
-	GPUPassConfig c = { n, RAY_FLAG_EXTEND | RAY_FLAG_HALTON | RAY_FLAG_MIRROR | ( bAuto ? RAY_FLAG_AUTO : 0 ), 0, bAuto ? budgetRel : 0.0f, bAuto ? budgetMin : 0.0f };
-	return c;
-}
-
-static GPUPassConfig	g_Passes[16] = {
+// Raycast passes (see flow_gpu.h). The setup is fixed so that the PVS is always the
+// same for a given map, whatever the hardware:
+//   Pass 1: ring pass, center + rings of points towards the winding vertices; stops at
+//           the first ray that gets through.
+//   Pass 2: dense pass (Halton points spread over the whole portal surface) on the pairs
+//           pass 1 could not prove. Its point count (up to 128 per portal) comes from a
+//           work budget that only depends on the map: max( 600 M ray-units, 1/8 of the
+//           work of pass 1 ). Fine on small maps, light or skipped on huge maps.
+//           Almost every pair left at this point is hidden, so every ray is cast
+//           (EXHAUSTIVE): the GPU can then spread the rays of a pair over many warps.
+static const GPUPassConfig	g_Passes[2] = {
 	{ 4, RAY_FLAG_EXTEND | RAY_FLAG_MIRROR, 5, 0.0f, 0.0f },
-	{ 128, RAY_FLAG_EXTEND | RAY_FLAG_HALTON | RAY_FLAG_MIRROR | RAY_FLAG_AUTO, 0, 0.25f, 1.0f },
+	{ 128, RAY_FLAG_EXTEND | RAY_FLAG_HALTON | RAY_FLAG_MIRROR | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_AUTO, 0, 0.125f, 600.0f },
 };
-static int		g_NumPasses = 2;
+static const int	g_NumPasses = 2;
+
+bool		g_bRayGpuOnly = false;
+bool		g_bRayNoGpu = false;
 static bool		g_bGpuFlowUsed = false;
 
 bool		g_bForceCpuFlow = false;
@@ -370,7 +360,7 @@ if ( bDone )
 g_bGpuFlowUsed = true;
 return;
 }
-Warning( "[VVIS GPU] GPU unavailable - using the original recursive CPU flow.\n" );
+Warning( "[VVIS GPU] Raycast flow unavailable - using the original recursive CPU flow.\n" );
 }
 
 	VisUI_Label( "PortalFlow:" );
@@ -986,83 +976,31 @@ int ParseCommandLine( int argc, char **argv )
 			Msg ("GPU backend forced: CUDA (OpenCL fallback if unavailable)\n");
 			_putenv_s( "VVIS_GPU_BACKEND", "cuda" );
 		}
+		else if (!Q_stricmp(argv[i], "-gpuonly"))
+		{
+			Msg ("Raycast engines: GPU only (CPU ray threads disabled)\n");
+			g_bRayGpuOnly = true;
+		}
+		else if (!Q_stricmp(argv[i], "-nogpu"))
+		{
+			Msg ("Raycast engines: CPU only (same PVS as the GPU)\n");
+			g_bRayNoGpu = true;
+		}
 		else if (!Q_stricmp(argv[i], "-final"))
 		{
-			g_Passes[0] = MakeRingPass( 4, RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR, 7 );
-			g_Passes[1] = MakeDensePass( 256, true, 1.0f, 5.0f );
-			g_NumPasses = 2;
-			Msg( "final mode: full ring pass, then dense sampling (up to 256 points/portal, larger time budget) on unproven pairs only\n" );
+			// Kept for compatibility with Hammer / compile tool presets.
+			Msg ("-final ignored: vvis_gpu always computes the same, fixed-precision PVS\n");
 		}
-		else if (!Q_stricmp(argv[i], "-RaycastType") && i + 1 < argc)
+		else if ((!Q_stricmp(argv[i], "-RaycastType") || !Q_stricmp(argv[i], "-Ray")) && i + 1 < argc)
 		{
-			int t = atoi( argv[++i] );
-			if ( t < 0 || t > 1 )
-			{
-				Warning( "-RaycastType must be 0 or 1\n" );
-				return 100000;
-			}
-			g_Passes[0] = MakeRingPass( g_RaycastTypeSamples[t], RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR, 7 );
-			g_NumPasses = 1;
-			Msg( "RaycastType %d (%d samples cap)\n", t, g_Passes[0].samples );
+			Msg ("%s %s ignored: the raycast precision is fixed\n", argv[i], argv[i+1]);
+			i++;
 		}
-		else if (!Q_stricmp(argv[i], "-Ray") && i + 1 < argc)
+		else if (!Q_stricmp(argv[i], "-Pass"))
 		{
-			int n = atoi( argv[++i] );
-			if ( n < 1 )
-			{
-				Warning( "-Ray must be >= 1\n" );
-				return 100000;
-			}
-			g_Passes[0] = MakeRingPass( n, RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR, 7 );
-			g_NumPasses = 1;
-			Msg( "Custom raycast samples cap = %d\n", n );
-		}
-		else if (!Q_stricmp(argv[i], "-Pass") && i + 1 < argc)
-		{
-			// Accepts "0:RaycastType=1,1:Dense=64" (comma/space separated, one or more arguments)
-			// or "0:Ray=6". Following arguments that contain ':' are consumed too. The index
-			// before ':' is not used: passes are added in the order given.
-			g_NumPasses = 0;
 			while ( i + 1 < argc && argv[i+1][0] != '-' && strchr( argv[i+1], ':' ) )
-			{
-				char buf[256];
-				V_strncpy( buf, argv[++i], sizeof( buf ) );
-				for ( char *tok = strtok( buf, ", " ); tok; tok = strtok( NULL, ", " ) )
-				{
-					char *colon = strchr( tok, ':' );
-					char *eq = colon ? strchr( colon, '=' ) : NULL;
-					if ( !colon || !eq || g_NumPasses >= 16 )
-					{
-						Warning( "Invalid -Pass entry \"%s\"\n", tok );
-						return 100000;
-					}
-					*colon = 0; *eq = 0;
-					const char *key = colon + 1;
-					int val = atoi( eq + 1 );
-					GPUPassConfig s;
-					const int ringFlags = RAY_FLAG_EXTEND | RAY_FLAG_EXHAUSTIVE | RAY_FLAG_MIRROR;
-					if ( !Q_stricmp( key, "RaycastType" ) && val >= 0 && val <= 1 )
-						s = MakeRingPass( g_RaycastTypeSamples[val], ringFlags, 7 );
-					else if ( !Q_stricmp( key, "Ray" ) && val >= 1 )
-						s = MakeRingPass( val, ringFlags, 7 );
-					else if ( !Q_stricmp( key, "Dense" ) && val >= 1 )
-						s = MakeDensePass( val, false, 0.0f, 0.0f );
-					else if ( !Q_stricmp( key, "Auto" ) && val >= 1 )
-						s = MakeDensePass( val, true, 0.5f, 2.0f );
-					else
-					{
-						Warning( "Invalid -Pass value \"%s=%s\"\n", key, eq + 1 );
-						return 100000;
-					}
-					g_Passes[g_NumPasses++] = s;
-				}
-			}
-			if ( g_NumPasses == 0 )
-			{
-				Warning( "-Pass: no valid pass given\n" );
-				return 100000;
-			}
-			Msg( "%d raycast pass(es)\n", g_NumPasses );
+				i++;
+			Msg ("-Pass ignored: the raycast precision is fixed\n");
 		}
 		else if (!Q_stricmp(argv[i], "-raycast"))
 		{
@@ -1157,35 +1095,22 @@ void PrintUsage( int argc, char **argv )
 		"\n"
 		"GPU options:\n"
 		"\n"
-		"  (default)       : GPU raycast (CUDA on NVIDIA, else OpenCL), CPU if no GPU.\n"
-		"                    One progress bar (PortalFlow_RayGPU: 0...10) covers all\n"
-		"                    GPU passes.\n"
-		"  VVIS_GPU_DEVICE=<n> (env) : use the n-th GPU\n"
-		"  -opencl         : Force OpenCL (NVIDIA, AMD, Intel)\n"
-		"  -cuda           : Force CUDA (NVIDIA)\n"
-		"  -cpu            : Original recursive CPU flow (no GPU)\n"
-		"\n"
-		"Raycast precision (GPU):\n"
-		"\n"
-		"  Default            : pass 1 = fast rings (center + vertex rings, stops at the\n"
-		"                       first ray that gets through), pass 2 = dense sampling on\n"
-		"                       the pairs pass 1 could not prove. Pass 2 adapts its point\n"
-		"                       count (up to 128/portal) to a time budget (about 25% of\n"
-		"                       pass 1, at least 1 s): fine on small maps, light or\n"
-		"                       skipped on huge maps. Symmetric pairs are tested once.\n"
-		"  -final             : More precise: complete ring pass, then dense sampling up\n"
-		"                       to 256 points/portal with a larger time budget (1x the\n"
-		"                       previous pass, at least 5 s). Still bounded on huge maps.\n"
-		"  -RaycastType <0-1> : Single exhaustive ring pass. 0 = cap 4 (13 points/portal)\n"
-		"                       1 = cap 5 (16 points on pentagons and more)\n"
-		"  -Ray <n>           : Single exhaustive ring pass, custom cap per ring (1 + 3*\n"
-		"                       min(n, vertices) points per portal).\n"
-		"                       Values above ~8 (max portal vertices) have no effect.\n"
-		"  -Pass <list>       : Several passes, e.g. -Pass 0:Ray=4,1:Dense=64\n"
-		"                       (RaycastType=<0-1>, Ray=<n>, Dense=<points> or\n"
-		"                       Auto=<max points> per pass). Pass N+1 only re-tests the\n"
-		"                       candidate pairs not yet proven visible by earlier\n"
-		"                       passes; results are merged (never removes visibility).\n"
+		"  (default)       : Raycast flow on every engine at once: the main GPU (CUDA on\n"
+		"                    NVIDIA, else OpenCL), other GPUs such as an integrated GPU\n"
+		"                    (OpenCL), and the CPU threads (AVX2 when available). Work is\n"
+		"                    shared dynamically; every engine computes the same rays, so\n"
+		"                    the PVS is identical on every machine and every run.\n"
+		"                    Pass 1 = vertex rings, pass 2 = dense sampling on the pairs\n"
+		"                    pass 1 could not prove (point count set by the map size).\n"
+		"  -gpuonly        : GPUs only (no CPU ray threads).\n"
+		"  -nogpu          : CPU ray threads only (same PVS, slower).\n"
+		"  -opencl         : Main GPU through OpenCL (NVIDIA, AMD, Intel)\n"
+		"  -cuda           : Main GPU through CUDA (NVIDIA)\n"
+		"  -cpu            : Original recursive CPU flow (no raycast)\n"
+		"  -final, -RaycastType, -Ray, -Pass : accepted but ignored (fixed precision).\n"
+		"  VVIS_GPU_DEVICE=<n> (env)     : use the n-th GPU as the main GPU\n"
+		"  VVIS_GPU_HELPERS_ALL=1 (env)  : also use other NVIDIA GPUs through OpenCL\n"
+		"  VVIS_CPU_ISA=sse2 (env)       : CPU ray threads without AVX2\n"
 		"\n"
 		"Output and updates:\n"
 		"\n"

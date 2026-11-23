@@ -68,13 +68,14 @@ vvis_gpu.exe [options] my_map.bsp
 
 | Option | Effect |
 |---|---|
-| `-cuda` / `-opencl` / `-cpu` | Force the backend (default: CUDA, then OpenCL, then CPU) |
-| `-final` | More precise: full ring pass, then denser sampling (up to 256 points per portal) with a larger time budget |
+| (default) | Raycast on **every engine at once**: the main GPU, other GPUs (integrated GPU, through OpenCL) and the CPU threads (AVX2 when available) |
+| `-gpuonly` | GPUs only (no CPU ray threads) |
+| `-nogpu` | CPU ray threads only (same PVS, slower) |
+| `-cuda` / `-opencl` | API for the main GPU (default: CUDA on NVIDIA, otherwise OpenCL) |
+| `-cpu` | Valve's original recursive CPU flow (no raycast) |
 | `-fast` | No raycast, just `portalflood` (huge PVS, very fast) |
-| `-Ray <n>` | One ring pass only, n points per ring (default 4, nothing changes past 8) |
-| `-RaycastType 1` | One ring pass only, denser |
-| `-Pass 0:Ray=4,1:Dense=64` | Custom passes (`Ray=<n>`, `RaycastType=<0-1>`, `Dense=<points>` or `Auto=<max points>`) |
-| `-debug` | Detailed GPU output (device, each pass, candidate pairs) |
+| `-final`, `-Ray`, `-RaycastType`, `-Pass` | Accepted but ignored: the precision is fixed (see below) |
+| `-debug` | Detailed GPU output (engines, each pass, candidate pairs, work share) |
 | `-nocolor` | Plain text output (also `NO_COLOR=1`; `FORCE_COLOR=1` keeps colors when redirected) |
 | `-noupdate` | Skip the update check at startup (also `VVIS_GPU_NOUPDATE=1`) |
 
@@ -84,26 +85,36 @@ passes:
 
 1. **Rings**: the centre of the portal plus rings towards its corners, stopping at the first
    ray that gets through.
-2. **Dense sampling** on the pairs the first pass could not prove. The number of points
-   (up to 128 per portal) adapts to a time budget of about 25 % of the first pass (at least
-   1 s): full on small maps, light or skipped on huge ones, so compile time stays close to the
-   first pass.
+2. **Dense sampling** on the pairs the first pass could not prove, every ray cast. The number
+   of points (up to 128 per portal) comes from a work budget that only depends on the map
+   (at least 600 M rays, or 1/8 of the first pass): full on small maps, light or skipped on
+   huge ones, so compile time stays close to the first pass.
 
 Rays may not graze portal edges, samples stay slightly inside the portal corners, and the
 result is clamped to `portalflood`, so a ray can't "leak" through the corner of a wall.
 
-Compared with Valve's VVIS (`-cpu -final`), on my test maps the GPU never marks as visible a
-pair that the CPU hides, and it misses only a few pairs behind very narrow openings (cluster
-pairs missing compared with the CPU):
+**Same PVS everywhere.** Nothing depends on the speed of the machine: rays are cast in fixed
+groups of 32 and every engine (CUDA, OpenCL, CPU SSE2/AVX2) runs the same code, so a map
+gives a byte-identical PVS on any PC, with any mix of engines. That's why `-final` is gone:
+there is one precision, the best one we can afford.
 
-| Map | v0.1 | Default | `-final` |
+**All engines together.** The work is cut into small batches that the GPUs and the CPU
+threads pick up as they finish, so a fast GPU does most of the work and nothing waits. The GPU
+spreads the rays of each pair over a whole warp (and over many warps in the dense pass), and
+keeps two batches in flight, so its load stays at 100 %.
+
+Compared with Valve's VVIS (`-cpu`), on my test maps the GPU never marks as visible a pair that
+the CPU hides, and it misses only a few pairs behind very narrow openings (cluster pairs
+missing compared with the CPU):
+
+| Map | v0.1 | v0.2 | v0.3 |
 |---|---|---|---|
 | `campaign_1` | 92 | 8 | 8 |
-| `gm_teste_vvis` | 2968 | 910 | 562 |
+| `gm_teste_vvis` | 2968 | 910 | 806 |
 
-On `gm_kindercity_night` (6,722 clusters, RTX 4090) the whole VVIS takes about 28 s (about
-60 s for v0.1). If you ever see a hole in the world, try `-final`, and please open an issue
-with the position (`getpos`).
+On `gm_kindercity_night` (7,019 clusters, RTX 4090 + Ryzen 9 7900X) the raycast takes about
+6 s and the whole VVIS about 10 s (about 36 s for v0.2). If you ever see a hole in the world,
+please open an issue with the position (`getpos`).
 
 At the end, every mode (GPU, `-cpu`, `-fast`) prints the same `PVS final: x%.` line: the share
 of the map visible from an average cluster (lower means more culling). On `campaign_1`: GPU
@@ -145,8 +156,9 @@ VVIS:
 | `src/utils/vrad/vrad_gpu.cpp` | Host side of VRAD's GPU code (CUDA loading, batches, queues) |
 | `src/utils/vrad/vrad_gpu_kernel.cu` | VRAD kernels: k-d tree, shadows, indirect |
 | `src/utils/vrad/vradstaticprops.cpp` | Static prop lighting wired to the GPU |
-| `src/utils/vvis/flow_gpu_host.cpp` | Host side of VVIS's GPU code (CUDA + OpenCL, passes) |
-| `src/utils/vvis/flow_gpu_kernel.cu` | VVIS kernel (the idea is explained at the top) |
+| `src/utils/vvis/flow_gpu_host.cpp` | Host side of VVIS's raycast (engines, scheduler, passes) |
+| `src/utils/vvis/flow_gpu_kernel.cu` | VVIS kernel, shared by CUDA and the CPU (the idea is explained at the top) |
+| `src/utils/vvis/flow_cpu_ray*.cpp` | The same kernel compiled for the CPU threads (SSE2 and AVX2) |
 | `src/utils/vvis/vvis_ui.cpp` | VVIS console output (colors, banner, progress bar) |
 | `src/utils/vvis_launcher/vvis_updater.cpp` | Startup update check and self-update from GitHub |
 | `src/utils/*_launcher/` | Launchers embedding the DLLs |

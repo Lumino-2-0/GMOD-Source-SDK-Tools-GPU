@@ -253,6 +253,8 @@
     <ClInclude Include="..\..\public\vcollide.h" />
     <ClInclude Include="..\..\public\mathlib\vector.h" />
     <ClInclude Include="..\..\public\mathlib\vector2d.h" />
+    <ClInclude Include="flow_cpu_ray.h" />
+    <ClInclude Include="flow_cpu_ray_impl.h" />
     <ClInclude Include="flow_gpu.h" />
     <ClInclude Include="vvis_ui.h" />
     <ClInclude Include="flow_gpu_kernel.h" />
@@ -281,6 +283,13 @@
     <ClCompile Include="..\common\threads.cpp" />
     <ClCompile Include="..\common\tools_minidump.cpp" />
     <ClCompile Include="vvis.cpp" />
+    <ClCompile Include="flow_cpu_ray.cpp">
+      <FloatingPointModel>Precise</FloatingPointModel>
+    </ClCompile>
+    <ClCompile Include="flow_cpu_ray_avx2.cpp">
+      <FloatingPointModel>Precise</FloatingPointModel>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+    </ClCompile>
     <ClCompile Include="flow_gpu_host.cpp" />
     <ClCompile Include="vvis_ui.cpp" />
     <ClCompile Include="WaterDist.cpp" />
