@@ -4,6 +4,8 @@ FR [Version française](README_FR.md)
 
 VVIS and VRAD for Garry's Mod (64-bit), with part of the work moved to the GPU.
 
+## Under construction, frequent updates!
+
 ## Project status
 
 I said it in the old version: I was starting over on a **CUDA** base with a stable plan. Done.
