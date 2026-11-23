@@ -4,6 +4,8 @@ EN [English version](README.md)
 
 VVIS et VRAD pour Garry's Mod (64 bits), avec une partie du calcul envoyée sur le GPU.
 
+## En construction, mises à jours fréquentes !
+
 ## Où en est le projet
 
 Je l'avais dit dans l'ancienne version : je repartais de zéro sur une base **CUDA**, avec un plan
